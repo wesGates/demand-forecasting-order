@@ -38,11 +38,25 @@ RMSE, MAE and bias are kept alongside as the plain-units view. Bias is
 `mean(forecast - actual)`: positive means over-forecasting, and it matters in
 its own right for replenishment, where a consistent 5% under-forecast is worse
 than noisy-but-centred.
+
+**Two kinds of week.** Every score is also reported split into *normal* and
+*holiday* folds. A fold is a holiday fold if any of its scored days falls in
+the window from two days before a major event to one day after it - the
+run-up and the hangover the event-effect table shows. The split is not there
+to hide holidays; it is there because a single pooled number cannot say
+whether a method's advantage comes from the fifty ordinary weeks or from the
+handful where the calendar does the work. Both columns are reported, always.
+
+**Closure days are not scored.** Step 2 flags the days the stores were shut
+and imputes their sales so the following week's features are sane. Those days
+are still in `predictions` (so a forecast plot shows them) but `score_folds`
+drops them: forecasting a locked door is not a demand question.
 """
 
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -106,12 +120,60 @@ def naive_scale(y, lag: int) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# Holiday weeks
+# --------------------------------------------------------------------------- #
+
+# Days before and after a major event that count as "holiday-affected". From
+# the event-effect table (step 3): the two days before Christmas and
+# Thanksgiving run 20-70% above baseline, and the day after is still elevated.
+HOLIDAY_WINDOW_BEFORE, HOLIDAY_WINDOW_AFTER = 2, 1
+
+
+def holiday_window(frame: pd.DataFrame) -> pd.Series:
+    """True for rows inside the holiday-affected window around a major event."""
+    return (frame["days_to_holiday"] <= HOLIDAY_WINDOW_BEFORE) | (
+        frame["days_since_holiday"] <= HOLIDAY_WINDOW_AFTER
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The walk-forward
 # --------------------------------------------------------------------------- #
 
 
+def _predictions_path(cfg: Config, methods: list[str]):
+    """
+    Cache location for a full walk-forward run.
+
+    The key covers everything that could change a forecast: the config, the
+    method list, the feature and panel versions, and the *source text* of the
+    model and harness modules. Editing a model therefore invalidates the cache
+    without anyone remembering to bump a number.
+    """
+    from src import step4_models
+    from src.step2_data import CACHE_VERSION
+
+    here = Path(__file__)
+    source = here.read_text() + Path(step4_models.__file__).read_text()
+    key = repr(
+        (
+            sorted((k, repr(v)) for k, v in cfg.__dict__.items()),
+            methods,
+            FEATURE_VERSION,
+            CACHE_VERSION,
+            hashlib.sha1(source.encode()).hexdigest(),
+        )
+    )
+    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+    return cfg.cache_dir / f"predictions_{digest}.parquet"
+
+
 def run_walk_forward(
-    df: pd.DataFrame, cfg: Config, methods: list[str] | None = None, progress: bool = True
+    df: pd.DataFrame,
+    cfg: Config,
+    methods: list[str] | None = None,
+    progress: bool = True,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
     """
     Every forecast from every method for every series-fold, with the actuals.
@@ -123,6 +185,10 @@ def run_walk_forward(
 
     `methods` defaults to every benchmark and every model. Pass a subset to
     iterate on one method quickly.
+
+    A full run takes on the order of twenty minutes (ARIMA is the slow one),
+    so the result is cached to parquet under a key that includes the source of
+    the model code - see `_predictions_path`. `use_cache=False` forces a rerun.
     """
     methods = list(methods or ALL_FORECASTERS)
     unknown = set(methods) - set(ALL_FORECASTERS)
@@ -130,6 +196,9 @@ def run_walk_forward(
         raise ValueError(
             f"unknown method(s) {sorted(unknown)}; choose from {list(ALL_FORECASTERS)}"
         )
+    cache_path = _predictions_path(cfg, methods)
+    if use_cache and cache_path.exists():
+        return pd.read_parquet(cache_path)
 
     last_date = df["date"].max()
     origins = cfg.fold_origins(last_date)
@@ -182,13 +251,16 @@ def run_walk_forward(
             )
             actual = targets["sales"].to_numpy(dtype=float)
             dates = targets["date"].to_numpy()
+            closure = targets["closure"].to_numpy(dtype=bool)
+            in_window = holiday_window(targets).to_numpy(dtype=bool)
+            week_kind = "holiday" if in_window.any() else "normal"
 
             for name in methods:
                 forecast = np.asarray(ALL_FORECASTERS[name](ctx), dtype=float)[
                     : len(targets)
                 ]
-                for h, (day, a, f) in enumerate(
-                    zip(dates, actual, forecast, strict=True), 1
+                for h, (day, a, f, c, w) in enumerate(
+                    zip(dates, actual, forecast, closure, in_window, strict=True), 1
                 ):
                     rows.append(
                         {
@@ -197,6 +269,7 @@ def run_walk_forward(
                             "store_id": store_id,
                             "fold": fold,
                             "origin": origin,
+                            "week_kind": week_kind,
                             "method": name,
                             "kind": "benchmark" if name in BENCHMARKS else "model",
                             "horizon": h,
@@ -204,17 +277,23 @@ def run_walk_forward(
                             "actual": a,
                             "forecast": f,
                             "scale": scale,
+                            "closure": c,
+                            "holiday_window": w,
                         }
                     )
 
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if use_cache:
+        cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+        out.to_parquet(cache_path, index=False)
+    return out
 
 
 # --------------------------------------------------------------------------- #
 # Scoring
 # --------------------------------------------------------------------------- #
 
-FOLD_KEYS = ["id", "item_id", "store_id", "fold", "origin", "method", "kind"]
+FOLD_KEYS = ["id", "item_id", "store_id", "fold", "origin", "week_kind", "method", "kind"]
 
 
 def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
@@ -224,7 +303,12 @@ def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
     RMSSE here is `rmse / scale`, where `scale` came with the predictions. All
     methods in the same series-fold share that scale, which is why RMSSE
     cannot change who wins a fold - only how folds and stores are compared.
+
+    Closure days are dropped before scoring (see the module docstring), so a
+    fold containing one is scored on six days rather than seven.
     """
+    if "closure" in predictions:
+        predictions = predictions[~predictions["closure"].astype(bool)]
 
     def one(g: pd.DataFrame) -> pd.Series:
         err = g["forecast"] - g["actual"]
@@ -247,8 +331,22 @@ def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def rmsse_by_store(scores: pd.DataFrame) -> pd.DataFrame:
-    """Stores down, methods across, mean RMSSE over folds. The headline table."""
+def _weeks(scores: pd.DataFrame, week_kind: str | None) -> pd.DataFrame:
+    """Filter to one kind of week, or keep all when `week_kind` is None."""
+    if week_kind is None:
+        return scores
+    if week_kind not in ("normal", "holiday"):
+        raise ValueError("week_kind must be None, 'normal' or 'holiday'")
+    return scores[scores["week_kind"] == week_kind]
+
+
+def rmsse_by_store(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFrame:
+    """
+    Stores down, methods across, mean RMSSE over folds. The headline table.
+
+    `week_kind` restricts it to "normal" or "holiday" folds; None pools both.
+    """
+    scores = _weeks(scores, week_kind)
     table = scores.pivot_table(
         index="store_id", columns="method", values="rmsse", aggfunc="mean"
     )
@@ -260,7 +358,7 @@ def rmsse_by_store(scores: pd.DataFrame) -> pd.DataFrame:
     return table.reindex(index=store_order, columns=method_order)
 
 
-def win_rates(scores: pd.DataFrame) -> pd.DataFrame:
+def win_rates(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFrame:
     """
     For every method, the share of series-folds where it beat each benchmark.
 
@@ -268,7 +366,10 @@ def win_rates(scores: pd.DataFrame) -> pd.DataFrame:
     "no better than the benchmark"; the row for a benchmark against itself is
     left blank. Win rate is a blunt instrument - it says how *often*, not by
     how *much* - which is why it sits beside RMSSE rather than replacing it.
+
+    `week_kind` restricts it to "normal" or "holiday" folds; None pools both.
     """
+    scores = _weeks(scores, week_kind)
     wide = scores.pivot_table(
         index=["id", "fold"], columns="method", values="rmsse", aggfunc="first"
     )
@@ -285,22 +386,28 @@ def win_rates(scores: pd.DataFrame) -> pd.DataFrame:
 
 def summarise(scores: pd.DataFrame) -> pd.DataFrame:
     """
-    One row per method: mean and median RMSSE across all series-folds, and
-    mean bias. Sorted best first. The single table to quote.
+    One row per method: mean and median RMSSE across all series-folds, mean
+    bias, and the mean RMSSE on normal and on holiday folds separately, with
+    the count of each. Sorted best on all folds first. The single table to
+    quote - and quote both week columns, never just the pooled one.
     """
-    out = (
-        scores.groupby(["method", "kind"], observed=True)
-        .agg(
-            rmsse_mean=("rmsse", "mean"),
-            rmsse_median=("rmsse", "median"),
-            bias_mean=("bias", "mean"),
-            n_folds=("rmsse", "size"),
-        )
-        .reset_index()
-        .sort_values("rmsse_mean")
-        .reset_index(drop=True)
+    overall = scores.groupby(["method", "kind"], observed=True).agg(
+        rmsse_mean=("rmsse", "mean"),
+        rmsse_median=("rmsse", "median"),
+        bias_mean=("bias", "mean"),
+        n_folds=("rmsse", "size"),
     )
-    return out
+    by_kind = scores.pivot_table(
+        index=["method", "kind"],
+        columns="week_kind",
+        values="rmsse",
+        aggfunc=["mean", "size"],
+        observed=True,
+    )
+    for week in ("normal", "holiday"):
+        overall[f"rmsse_{week}"] = by_kind.get(("mean", week), np.nan)
+        overall[f"n_{week}"] = by_kind.get(("size", week), 0)
+    return overall.reset_index().sort_values("rmsse_mean").reset_index(drop=True)
 
 
 if __name__ == "__main__":
@@ -317,9 +424,15 @@ if __name__ == "__main__":
     print(
         f"\n{len(predictions):,} forecast-days, {len(scores):,} series-fold-method scores\n"
     )
-    print("=== summary: mean RMSSE per method, best first ===")
+    print("=== summary: mean RMSSE per method, best first (all / normal / holiday) ===")
     print(summarise(scores).round(3).to_string(index=False))
-    print("\n=== RMSSE by store (busiest first) x method (best first) ===")
-    print(rmsse_by_store(scores).round(3).to_string())
-    print("\n=== win rate: rows beat columns, share of series-folds ===")
-    print(win_rates(scores).round(2).to_string())
+    for week in (None, "normal", "holiday"):
+        label = week or "all"
+        print(
+            f"\n=== RMSSE by store (busiest first) x method (best first) - {label} weeks ==="
+        )
+        print(rmsse_by_store(scores, week).round(3).to_string())
+        print(
+            f"\n=== win rate: rows beat columns, share of series-folds - {label} weeks ==="
+        )
+        print(win_rates(scores, week).round(2).to_string())

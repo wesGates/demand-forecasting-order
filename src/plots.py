@@ -736,11 +736,11 @@ def plot_zero_rate(
 # Models carry a hue; benchmarks recede to grey. Seven methods is past the
 # three hues a chart can carry safely, and the story is "the two models
 # against the pack", so that is what the colour says.
-MODEL_COLOURS = {"xgboost": SERIES_1, "ets": SERIES_2}
+MODEL_COLOURS = {"xgboost": SERIES_1, "ets": SERIES_2, "arima": SERIES_3}
 
 # The subset drawn by default where seven lines would be a tangle: both
 # models plus the two benchmarks that actually compete.
-DEFAULT_METHODS = ("xgboost", "ets", "moving_average_28", "seasonal_naive")
+DEFAULT_METHODS = ("xgboost", "ets", "arima", "moving_average_28", "seasonal_naive")
 
 
 def _method_style(name: str, kind: str) -> dict:

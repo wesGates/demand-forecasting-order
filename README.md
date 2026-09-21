@@ -19,16 +19,23 @@ Write-up in progress. Results below are preliminary.
   store-item-day, and joins calendar, holiday, SNAP and price information.
 - Screens each series for *availability* before anything else — a month of zero
   sales on a fast-moving item is a stocking gap, not demand, and it corrupts
-  every statistic downstream.
+  every statistic downstream. Treats the one closure day in the calendar
+  (Christmas) as a missing observation rather than a zero (FPP §13.7).
+- Measures which calendar events actually move the item, and gives the models
+  holiday proximity — the run-up and the hangover — rather than an on/off flag.
 - Classifies demand by how often and how consistently an item sells
   (ADI / CV², the Syntetos–Boylan scheme), computed on training data only.
 - Forecasts seven days ahead from a single origin, daily, exactly as a
   replenishment run would: stand on Sunday, order for the week.
-- Compares two learned models — **XGBoost** and **ETS** (Holt-Winters) — against
-  **five benchmarks**: mean, naïve, seasonal naïve, drift, and a 28-day moving
-  average.
-- Scores with **RMSSE** (FPP §5.8) over walk-forward folds (FPP §5.10), plus
-  RMSE, MAE, bias, and win rates.
+- Compares three learned models — **XGBoost**, **ETS** (Holt-Winters) and
+  **seasonal ARIMA** with calendar regressors — against **six benchmarks**:
+  mean, naïve, seasonal naïve (this day last week, the orderer's default
+  screen), seasonal naïve at one year (this day last year, what an orderer
+  checks before a holiday), drift, and a 28-day moving average.
+- Scores with **RMSSE** (FPP §5.8) over 52 walk-forward folds (FPP §5.10), one
+  full year, plus RMSE, MAE, bias, and win rates — every table split into
+  normal and holiday weeks, so a pooled number can never hide where a win
+  came from.
 - Refuses to report a number until a validator has passed.
 
 ## Why the safeguards are the point
@@ -44,10 +51,11 @@ two failures cannot recur:
   anything that reaches past the origin.
 - **Five benchmarks, not one.** Seasonal naïve stakes everything on one past
   day; on a noisy series its error is about √2 worse than predicting the mean.
-- **`python -m src.validate`** runs six checks that each catch a different way
+- **`python -m src.validate`** runs seven checks that each catch a different way
   of being *plausibly* wrong — closed-form benchmark answers, feature values
   recomputed by a second route, per-state SNAP flags against the raw calendar,
-  a synthetic noise floor no honest model can beat, a shuffled target no model
+  holiday-proximity counts and closure flags recounted from the calendar, a
+  synthetic noise floor no honest model can beat, a shuffled target no model
   should learn from, and byte-identical reruns.
 
 ## Layout
@@ -58,8 +66,8 @@ src/
   step2_data.py       load, reshape, join, pre-launch trim, parquet cache
   step3_explore.py    availability screen, ADI/CV² classification
   features.py         origin-based lags, rolling stats, calendar; leakage assertion
-  step4_models.py     five benchmarks + XGBoost + ETS behind one interface
-  step5_evaluate.py   walk-forward harness, RMSSE, tables
+  step4_models.py     six benchmarks + XGBoost + ETS + ARIMA behind one interface
+  step5_evaluate.py   walk-forward harness, RMSSE, normal/holiday split, tables
   plots.py            every figure, on one palette
   validate.py         the gate
   render_figures.py   regenerate all figures to figures/
@@ -99,26 +107,41 @@ python -m src.step5_evaluate    # the comparison, as tables
 
 ## Preliminary result
 
-One item (`FOODS_3_586`), ten stores, 8 walk-forward folds of 7 days,
-RMSSE scaled by the seasonal-naïve error on training data:
+One item (`FOODS_3_586`), ten stores, 52 walk-forward folds of 7 days — one
+full year, 25 May 2015 to 22 May 2016 — RMSSE scaled by the seasonal-naïve
+error on training data. "Holiday" folds are the ten weeks per store that
+touch the window around a major event; "normal" folds are the other 42.
 
-| method | RMSSE mean | median |
-|---|---|---|
-| xgboost | 0.58 | 0.56 |
-| ets | 0.60 | 0.57 |
-| moving average (28) | 0.69 | 0.67 |
-| seasonal naïve | 0.78 | 0.74 |
-| mean | 0.83 | 0.77 |
-| naïve / drift | 1.06 | 0.93 |
+| method | all weeks | normal weeks | holiday weeks | bias (units/day) |
+|---|---|---|---|---|
+| ARIMA (seasonal, calendar regressors) | 0.65 | 0.63 | 0.74 | −0.1 |
+| XGBoost | 0.67 | 0.65 | 0.72 | +0.9 |
+| ETS (Holt-Winters) | 0.67 | 0.64 | 0.80 | −0.1 |
+| moving average (28) | 0.80 | 0.78 | 0.87 | −0.1 |
+| seasonal naïve (last week) | 0.86 | 0.82 | 1.02 | −0.1 |
+| mean | 0.96 | 0.96 | 0.99 | +3.3 |
+| seasonal naïve (last year) | 1.04 | 1.03 | 1.08 | −0.1 |
+| naïve / drift | 1.10 | 1.10 | 1.10 | +9.5 |
 
-The two models tie with each other and clearly beat every simple method. Their
-advantage is largest at the busiest stores and shrinks at the quietest, where
-a 28-day moving average is nearly as good. The residual diagnostics show a
-systematic over-forecast in one model at one store, which is under
-investigation.
+What the year says that the spring slice could not:
 
-Caveat that matters: the scored window is a single spring slice (56 days). A
-wider window is one config change and is the next step.
+- The three models are within 0.03 of each other over the year and all beat
+  every benchmark at every store. Which one is *best* depends on the store:
+  XGBoost leads at all three Texas stores and two of the three Wisconsin
+  ones; ETS or ARIMA leads at every California store.
+- The split shows where each earns its keep. On ordinary weeks the classical
+  models edge XGBoost. On holiday weeks XGBoost is best and ETS falls
+  furthest — ETS is the one model that cannot be told a holiday is coming,
+  and the gap between it and ARIMA on holiday weeks (0.80 vs 0.74) is the
+  price of that.
+- "This day last year" — what an orderer checks before a holiday — is a
+  *worse* benchmark than "this day last week" on this item, even in holiday
+  weeks. The item's level has drifted year over year, and the annual lookup
+  carries the old level with it.
+- Naïve and drift over-forecast by nine units a day because every origin is a
+  Sunday, the busiest day, and they repeat it for the week.
+- XGBoost's over-forecast is smaller over the year (+0.9/day) than in the
+  spring slice (+1.2), but it remains the one model with a positive bias.
 
 ## What is deliberately not claimed
 

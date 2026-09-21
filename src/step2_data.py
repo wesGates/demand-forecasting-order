@@ -19,6 +19,22 @@ Three things in here are not obvious and all three matter:
    for sale", not "nobody bought it". Left in, they teach a model the item sells
    nothing and drag every rolling average down. A missing price is the reliable
    signal: no price on file that week means it was not being sold.
+
+4. **A closure day is a missing observation, not a zero.** Every store in M5
+   records zero sales on Christmas Day because the stores were shut. That is
+   not demand, and left as a zero it does damage well beyond the day itself:
+   the seasonal naive forecast for the following week reads it, every rolling
+   mean is dragged down for a week, and ETS takes it as a level shock. FPP
+   §13.7 treats such days as missing and replaces them; so does this loader,
+   with the same-weekday mean of the surrounding weeks, and it flags the row
+   (`closure`) so step 5 can leave it out of the score.
+
+5. **Holiday proximity is a calendar fact, known years ahead.** The loader
+   attaches `is_holiday`, `days_to_holiday` and `days_since_holiday` for the
+   events that measurably move this item (`MAJOR_EVENTS`, chosen from the
+   event-effect table in step 3, not by assumption). A model with only an
+   on/off flag cannot learn the run-up before Christmas or Thanksgiving,
+   which in this data is as large as the day itself.
 """
 
 from __future__ import annotations
@@ -27,6 +43,7 @@ import hashlib
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.step1_problem import Config
@@ -34,7 +51,7 @@ from src.step1_problem import Config
 # Bump when load_m5 or trim_prelaunch_zeros changes what they produce. The
 # cache key includes this, so old parquet files stop being served instead of
 # silently returning a panel built by superseded logic.
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 ID_COLS = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id"]
 CAL_COLS = [
@@ -54,10 +71,117 @@ CAL_COLS = [
 ]
 SNAP_BY_STATE = {"CA": "snap_CA", "TX": "snap_TX", "WI": "snap_WI"}
 
+# Calendar events that measurably move the study item. Chosen from
+# `step3_explore.event_effects`: an event is in if its day, or the two days
+# before it, run at least 15% away from the same-weekday baseline across the
+# ten stores and five years. The other 23 events in the M5 calendar (sporting,
+# most religious, minor national days) sit within a few percent of baseline for
+# this item and would only dilute a proximity feature. "Chanukah End" clears the
+# bar numerically but falls inside the Christmas run-up in most years, so it is
+# left out as confounded rather than counted twice.
+MAJOR_EVENTS = (
+    "Christmas",
+    "Thanksgiving",
+    "LaborDay",
+    "IndependenceDay",
+    "ValentinesDay",
+    "NewYear",
+    "Easter",
+)
+
+# Events on which the stores are shut. Sales are recorded as zero, which is a
+# missing observation, not demand - see point 4 in the module docstring.
+CLOSURE_EVENTS = ("Christmas",)
+
+# Proximity features are clipped here. Beyond a month "how far to the next
+# holiday" carries no information about demand, and an unclipped count would
+# hand a tree model a second copy of day-of-year.
+HOLIDAY_CLIP_DAYS = 30
+
 
 # --------------------------------------------------------------------------- #
 # Loading
 # --------------------------------------------------------------------------- #
+
+
+def holiday_calendar(calendar: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per calendar date with the holiday-proximity columns.
+
+    `is_holiday`         1 on a MAJOR_EVENTS day.
+    `days_to_holiday`    days until the next major event, 0 on the day itself.
+    `days_since_holiday` days since the last major event, 0 on the day itself.
+    `closure`            True on a CLOSURE_EVENTS day.
+
+    Both counts are clipped at HOLIDAY_CLIP_DAYS, and where the calendar runs
+    out before the next event they take the clip value - the last date in M5
+    is more than a month from any major event in either direction, so nothing
+    the study scores is affected. Two non-negative counts are used rather than
+    one signed distance because a signed value clipped at +-k cannot tell
+    "exactly k days after" from "nothing nearby".
+
+    Every value here is a fact about the calendar, so it is known in advance
+    for any target date and may be used as a feature without leaking.
+    """
+    cal = calendar[["date", "event_name_1", "event_name_2"]].copy()
+    names = cal[["event_name_1", "event_name_2"]]
+    is_major = names.isin(MAJOR_EVENTS).any(axis=1)
+    is_closure = names.isin(CLOSURE_EVENTS).any(axis=1)
+
+    dates = cal["date"].to_numpy()
+    major_dates = dates[is_major.to_numpy()]
+    # searchsorted gives, for each date, the index of the next event at or after it.
+    nxt = np.searchsorted(major_dates, dates, side="left")
+    prv = np.searchsorted(major_dates, dates, side="right") - 1
+    clip = np.timedelta64(HOLIDAY_CLIP_DAYS, "D")
+    to_next = np.where(
+        nxt < len(major_dates),
+        major_dates[np.minimum(nxt, len(major_dates) - 1)] - dates,
+        clip,
+    )
+    since_prev = np.where(prv >= 0, dates - major_dates[np.maximum(prv, 0)], clip)
+
+    out = pd.DataFrame({"date": cal["date"]})
+    out["is_holiday"] = is_major.astype("int8").to_numpy()
+    out["days_to_holiday"] = np.minimum(
+        (to_next / np.timedelta64(1, "D")).astype(int), HOLIDAY_CLIP_DAYS
+    ).astype("int16")
+    out["days_since_holiday"] = np.minimum(
+        (since_prev / np.timedelta64(1, "D")).astype(int), HOLIDAY_CLIP_DAYS
+    ).astype("int16")
+    out["closure"] = is_closure.to_numpy()
+    return out
+
+
+def impute_closures(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace sales on closure days with the same-weekday mean of the four
+    weeks either side (FPP §13.7, missing values).
+
+    The replacement is deliberately dull. It is there so the following week's
+    lags, rolling means and smoothing states see a normal day where the store
+    happened to be shut, not so anyone forecasts Christmas - the row stays
+    flagged `closure` and step 5 excludes it from every score.
+    """
+    df = df.copy()
+    closed = df.index[df["closure"]]
+    if len(closed) == 0:
+        return df
+    by_key = df.set_index(["id", "date"])["sales"]
+    closed_keys = set(zip(df.loc[closed, "id"], df.loc[closed, "date"], strict=True))
+    replacement = {}
+    for sid, day in closed_keys:
+        values = []
+        for k in (-4, -3, -2, -1, 1, 2, 3, 4):
+            key = (sid, day + pd.Timedelta(days=7 * k))
+            if key in by_key.index and key not in closed_keys:
+                values.append(float(by_key[key]))
+        if values:
+            replacement[(sid, day)] = float(np.mean(values))
+    keys = list(zip(df.loc[closed, "id"], df.loc[closed, "date"], strict=True))
+    df.loc[closed, "sales"] = [replacement.get(k, np.nan) for k in keys]
+    df["sales"] = df["sales"].fillna(0.0).astype("float32")
+    return df
 
 
 def load_m5(
@@ -100,6 +224,7 @@ def load_m5(
 
     # ---- calendar --------------------------------------------------------
     df = df.merge(calendar[CAL_COLS], on="d", how="left", validate="m:1")
+    df = df.merge(holiday_calendar(calendar), on="date", how="left", validate="m:1")
 
     # Each row takes the SNAP flag for its own state. An unmapped state would
     # otherwise keep the 0 default - a plausible-looking flag that is simply
@@ -196,7 +321,7 @@ def load_panel(cfg: Config, use_cache: bool = True, verbose: bool = True) -> pd.
         return df
 
     raw = load_m5(cfg.data_dir, **cfg.subset)
-    df = trim_prelaunch_zeros(raw)
+    df = impute_closures(trim_prelaunch_zeros(raw))
 
     if verbose:
         dropped = len(raw) - len(df)
@@ -204,6 +329,7 @@ def load_panel(cfg: Config, use_cache: bool = True, verbose: bool = True) -> pd.
             f"built panel: {df['id'].nunique():,} series, {len(df):,} rows, "
             f"{df['date'].min().date()} -> {df['date'].max().date()}\n"
             f"  pre-launch rows dropped : {dropped:,} ({dropped / len(raw):.1%})\n"
+            f"  closure days imputed    : {int(df['closure'].sum()):,}\n"
             f"  zero-sales share before : {(raw['sales'] == 0).mean():.1%}\n"
             f"  zero-sales share after  : {(df['sales'] == 0).mean():.1%}"
         )

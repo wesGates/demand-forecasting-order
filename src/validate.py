@@ -3,7 +3,7 @@ The validator. Run it before trusting any number this project produces.
 
     python -m src.validate
 
-Six checks in five groups, each aimed at a different way of being wrong. What
+Seven checks in six groups, each aimed at a different way of being wrong. What
 they have in common is the only thing that matters: **every bug they catch
 still produces plausible-looking output.** A result that is obviously broken
 gets fixed the moment you see it; a result that is quietly wrong ends up in a
@@ -32,6 +32,9 @@ report.
 
   5. Determinism - does the same input give the same answer twice?
      Cheap, and it is what makes a reported number reproducible.
+
+  6. Holiday calendar - are the proximity counts and closure flags right?
+     Recounted by hand from the raw calendar for every date in the panel.
 """
 
 from __future__ import annotations
@@ -47,7 +50,13 @@ from src.features import (
     build_supervised,
 )
 from src.step1_problem import STUDY_ITEMS, Config
-from src.step2_data import SNAP_BY_STATE, load_panel
+from src.step2_data import (
+    CLOSURE_EVENTS,
+    HOLIDAY_CLIP_DAYS,
+    MAJOR_EVENTS,
+    SNAP_BY_STATE,
+    load_panel,
+)
 from src.step4_models import BENCHMARKS, Context, fit_predict_xgboost
 
 TOL = 1e-9
@@ -70,6 +79,10 @@ def _series_frame(values: np.ndarray, start: str = "2013-01-07") -> pd.DataFrame
             "sales": np.asarray(values, dtype=float),
             "snap": 0,
             "event_name_1": pd.Series([None] * len(values), dtype=object),
+            "is_holiday": 0,
+            "days_to_holiday": 30,
+            "days_since_holiday": 30,
+            "closure": False,
         }
     )
 
@@ -116,6 +129,10 @@ def _synthetic_panel(
                     "sales": np.maximum(signal + rng.normal(0, noise_sd, n_days), 0),
                     "snap": 0,
                     "event_name_1": pd.Series([None] * n_days, dtype=object),
+                    "is_holiday": 0,
+                    "days_to_holiday": 30,
+                    "days_since_holiday": 30,
+                    "closure": False,
                 }
             )
         )
@@ -196,8 +213,20 @@ def check_benchmarks_closed_form() -> dict:
         "drift": last + np.arange(1, 8),
         "mean": np.full(7, np.arange(1, n - 6).mean()),
         "seasonal_naive": np.arange(last - 6, last + 1),
+        # history is only 193 days, shorter than 364, so this must fall back to
+        # the weekly seasonal naive
+        "seasonal_naive_364": np.arange(last - 6, last + 1),
         "moving_average_28": np.full(7, np.arange(last - 27, last + 1).mean()),
     }
+    # And with 400 days of history the lag-364 benchmark must reach back a year.
+    n2 = 400
+    ctx2 = _context(_series_frame(np.arange(1, n2 + 1, dtype=float)))
+    want = np.arange(n2 - 7 + 1, n2 + 1) - 364.0  # target day t -> value at t-364
+    got = BENCHMARKS["seasonal_naive_364"](ctx2)
+    if not np.allclose(got, want, atol=1e-6):
+        failures.append(
+            f"seasonal_naive_364 on a 400-day ramp returned {got}, expected {want}"
+        )
     for name, want in expected.items():
         got = BENCHMARKS[name](ctx)
         if not np.allclose(got, want, atol=1e-6):
@@ -444,6 +473,65 @@ def check_snap_flags(cfg: Config | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 6. Holiday calendar and closure handling
+# --------------------------------------------------------------------------- #
+
+
+def check_holiday_calendar(cfg: Config | None = None) -> dict:
+    """
+    The proximity columns must agree with a by-hand recount from the raw
+    calendar, and the closure flag must sit on exactly the closure events.
+
+    Both are the kind of thing that fails plausibly: an off-by-one in
+    `days_to_holiday` still gives small integers near holidays, and a closure
+    flag on the wrong day still imputes *something*.
+    """
+    cfg = cfg or Config(item_ids=STUDY_ITEMS)
+    panel = load_panel(cfg, verbose=False)
+    calendar = pd.read_csv(cfg.data_dir / "calendar.csv", parse_dates=["date"])
+    names = calendar[["event_name_1", "event_name_2"]]
+    major = set(calendar.loc[names.isin(MAJOR_EVENTS).any(axis=1), "date"])
+    closures = set(calendar.loc[names.isin(CLOSURE_EVENTS).any(axis=1), "date"])
+
+    days = panel.drop_duplicates("date").set_index("date").sort_index()
+    failures, checked = [], 0
+    for day, row in days.iterrows():
+        ahead = [(m - day).days for m in major if m >= day]
+        behind = [(day - m).days for m in major if m <= day]
+        want_to = min(ahead + [HOLIDAY_CLIP_DAYS]) if ahead else HOLIDAY_CLIP_DAYS
+        want_since = min(behind + [HOLIDAY_CLIP_DAYS]) if behind else HOLIDAY_CLIP_DAYS
+        want_to, want_since = (
+            min(want_to, HOLIDAY_CLIP_DAYS),
+            min(want_since, HOLIDAY_CLIP_DAYS),
+        )
+        got = (
+            int(row["days_to_holiday"]),
+            int(row["days_since_holiday"]),
+            int(row["is_holiday"]),
+        )
+        want = (want_to, want_since, int(day in major))
+        checked += 1
+        if got != want:
+            failures.append(f"{day.date()}: got to/since/is={got}, want {want}")
+
+    flagged = set(panel.loc[panel["closure"], "date"])
+    if flagged != (closures & set(days.index)):
+        failures.append(f"closure flag on {sorted(d.date() for d in flagged)[:5]}...")
+    # Imputed closure days must no longer be zero on a continuously stocked item.
+    still_zero = int((panel.loc[panel["closure"], "sales"] == 0).sum())
+    if still_zero:
+        failures.append(f"{still_zero} closure rows still read zero after imputation")
+
+    return {
+        "check": "holiday calendar and closures",
+        "tested": f"{checked:,} dates recounted from calendar.csv; {len(flagged)} closure dates",
+        "major_events": sorted(MAJOR_EVENTS),
+        "failures": failures[:8],
+        "verdict": "ok" if not failures else "FAILED",
+    }
+
+
+# --------------------------------------------------------------------------- #
 
 
 def run_all() -> bool:
@@ -452,6 +540,7 @@ def run_all() -> bool:
         check_benchmarks_closed_form,
         check_features_hand_computed,
         check_snap_flags,
+        check_holiday_calendar,
         check_determinism,
         check_noise_floor,
         check_shuffled_target,

@@ -24,6 +24,15 @@ are the guard against that.
 
   xgboost   gradient-boosted trees on the supervised feature matrix
   ets       Holt-Winters exponential smoothing (FPP Ch. 8)
+  arima     seasonal ARIMA with holiday and SNAP regressors (FPP Ch. 9-10)
+
+ETS and ARIMA are the two classical families FPP puts forward, and they are
+not interchangeable here: the ETS implementation takes no regressors, so it
+cannot be told a holiday is coming, while ARIMA can. Keeping both shows what
+the calendar information is worth to a classical model. A plain ARMA is not in
+the set on purpose - it is ARIMA without differencing or a seasonal term, and on
+daily data with a weekly cycle it would need absurd orders to imitate the
+seasonality that one seasonal term captures.
 
 **Pooling is not a model - it is a training scope**, and it lives on
 `Config.pool_by`. "XGBoost per store" and "XGBoost pooled across stores" are the
@@ -176,10 +185,33 @@ def bench_moving_average(ctx: Context, window: int = 28) -> np.ndarray:
     return _flat(ctx.y[-window:].mean(), ctx)
 
 
+def bench_seasonal_naive_364(ctx: Context) -> np.ndarray:
+    """
+    Seasonal naive with a one-year period: the same weekday, 52 weeks ago.
+
+    The weekly seasonal naive is what an orderer's default screen shows - this
+    day last week. Before a holiday an experienced orderer switches to *this
+    day last year*, and that is what this benchmark encodes. Lag 364 rather
+    than 365 keeps the weekday aligned (FPP §13.1 on annual periods in daily
+    data). Falls back to the weekly version when a year of history is not yet
+    available, so the two benchmarks are identical on short series.
+
+    Included so that the holiday-week comparison is against what a good orderer
+    actually does, not only against the default screen.
+    """
+    y = ctx.y
+    lag = 52 * ctx.season
+    if len(y) < lag:
+        return bench_seasonal_naive(ctx)
+    idx = [-lag + (h - 1) for h in range(1, ctx.horizon + 1)]
+    return y[idx]
+
+
 BENCHMARKS: dict[str, Forecaster] = {
     "mean": bench_mean,
     "naive": bench_naive,
     "seasonal_naive": bench_seasonal_naive,
+    "seasonal_naive_364": bench_seasonal_naive_364,
     "drift": bench_drift,
     "moving_average_28": bench_moving_average,
 }
@@ -331,7 +363,116 @@ def fit_predict_ets(ctx: Context) -> np.ndarray:
         return _flat(ctx.y[-28:].mean(), ctx)
 
 
-MODELS: dict[str, Forecaster] = {"xgboost": fit_predict_xgboost, "ets": fit_predict_ets}
+# --- ARIMA ------------------------------------------------------------------
+
+# Regressors handed to ARIMA. All are known in advance for any target date, so
+# they are legitimate predictors in FPP's sense (§10.1). `pre_holiday` is the
+# two-day run-up the event-effect table shows for this item.
+ARIMA_EXOG = ("is_holiday", "pre_holiday", "snap")
+
+# The differencing is fixed, not searched: no ordinary difference (the series
+# is level-stationary over two years) and one seasonal difference at lag 7.
+# FPP §9.7 is explicit that information criteria cannot compare models with
+# different orders of differencing, so only the AR and MA orders are chosen.
+ARIMA_D, ARIMA_SEASONAL_D = 0, 1
+ARIMA_GRID = [
+    (p, q, P, Q) for p in (0, 1, 2) for q in (0, 1, 2) for P in (0, 1) for Q in (0, 1)
+]
+ARIMA_FIT_DAYS = 730
+
+# Chosen orders, one per series, filled on the first fold each series is
+# forecast and reused after. The harness walks folds oldest first, so the
+# selection is made on the earliest training window and never sees a scored
+# day. Reset between unrelated runs with `arima_orders.clear()`.
+arima_orders: dict[
+    str, tuple[tuple[int, int, int], tuple[int, int, int, int], float]
+] = {}
+
+
+def _arima_exog(frame: pd.DataFrame) -> np.ndarray:
+    out = pd.DataFrame(index=frame.index)
+    out["is_holiday"] = frame["is_holiday"].astype(float)
+    out["pre_holiday"] = frame["days_to_holiday"].between(1, 2).astype(float)
+    out["snap"] = frame["snap"].astype(float)
+    return out[list(ARIMA_EXOG)].to_numpy(dtype=float)
+
+
+def _select_arima_order(y: np.ndarray, exog: np.ndarray, season: int):
+    """AICc over ARIMA_GRID at fixed differencing. Returns (order, seasonal_order, aicc)."""
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+    best = None
+    for p, q, P, Q in ARIMA_GRID:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fit = SARIMAX(
+                    y,
+                    exog=exog,
+                    order=(p, ARIMA_D, q),
+                    seasonal_order=(P, ARIMA_SEASONAL_D, Q, season),
+                ).fit(disp=False, maxiter=200)
+            aicc = float(fit.aicc)
+        except Exception:
+            continue
+        if np.isfinite(aicc) and (best is None or aicc < best[2]):
+            best = ((p, ARIMA_D, q), (P, ARIMA_SEASONAL_D, Q, season), aicc)
+    if best is None:
+        raise RuntimeError("no ARIMA order in the grid could be fitted")
+    return best
+
+
+def fit_predict_arima(ctx: Context) -> np.ndarray:
+    """
+    Seasonal ARIMA with regressors (FPP Ch. 9, and Ch. 10 for the regressors).
+
+    The classical model that *can* be told about the calendar. It is given the
+    same known-in-advance information XGBoost gets - a holiday flag, a
+    pre-holiday flag and the SNAP flag - so the comparison between the two is
+    about the modelling, not about who was allowed to see the calendar.
+
+    Fitted on the most recent two years, like ETS and for the same reason. The
+    order is selected once per series by AICc on that series' first training
+    window and then held fixed across folds: re-selecting on every fold would
+    multiply the run time by the grid size and make fold-to-fold differences
+    partly about which order happened to win.
+
+    Fallback and warning follow ETS's pattern: a failed fit gives the 28-day
+    mean, and says so.
+    """
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+    hist = ctx.history.iloc[-ARIMA_FIT_DAYS:]
+    y = hist["sales"].to_numpy(dtype=float)
+    if len(y) < 4 * ctx.season:
+        return _flat(ctx.y[-28:].mean(), ctx)
+    x_hist, x_future = _arima_exog(hist), _arima_exog(ctx.targets)
+
+    try:
+        if ctx.series_id not in arima_orders:
+            arima_orders[ctx.series_id] = _select_arima_order(y, x_hist, ctx.season)
+        order, seasonal_order, _ = arima_orders[ctx.series_id]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = SARIMAX(y, exog=x_hist, order=order, seasonal_order=seasonal_order).fit(
+                disp=False, maxiter=200
+            )
+            fc = fit.forecast(steps=ctx.horizon, exog=x_future[: ctx.horizon])
+        return np.clip(np.asarray(fc, dtype=float), 0, None)
+    except Exception as err:
+        warnings.warn(
+            f"ARIMA failed for {ctx.series_id} at origin {ctx.origin.date()} "
+            f"({type(err).__name__}: {err}); using the 28-day mean instead.",
+            stacklevel=2,
+        )
+        return _flat(ctx.y[-28:].mean(), ctx)
+
+
+MODELS: dict[str, Forecaster] = {
+    "xgboost": fit_predict_xgboost,
+    "ets": fit_predict_ets,
+    "arima": fit_predict_arima,
+}
 
 # Everything that produces a forecast, benchmarks and models alike.
 ALL_FORECASTERS: dict[str, Forecaster] = {**BENCHMARKS, **MODELS}

@@ -159,7 +159,7 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
     save(fig, "9_rmsse_by_horizon.png")
 
     # 10. residual diagnostics for each model at the busiest store (FPP §5.4)
-    for model in ("xgboost", "ets"):
+    for model in ("xgboost", "ets", "arima"):
         fig, axes = plt.subplots(1, 3, figsize=(13, 3.2))
         plots.plot_residual_diagnostics(
             predictions, top_id, model, season=cfg.season, axes=axes

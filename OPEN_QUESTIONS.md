@@ -4,7 +4,7 @@ A living list. Each entry says what was found, what the evidence is, what the
 options are, and what would settle it. Resolved items move to the bottom with
 the decision recorded, so the reasoning is not lost.
 
-Last updated: 2026-09-17.
+Last updated: 2026-09-21.
 
 ---
 
@@ -12,11 +12,16 @@ Last updated: 2026-09-17.
 
 ### 1. XGBoost over-forecasts at the busiest store — parked
 
-**Found:** residual diagnostics (FPP §5.4) for XGBoost at TX_2 show a mean
+**Found:** residual diagnostics (FPP §5.4) for XGBoost at TX_2 showed a mean
 residual of **+7.66 units/day** on a ~100/day store — a systematic ~7.5%
-over-forecast — with a right-skewed tail to +40. ETS at the same store is
-essentially unbiased (+0.80). Across all ten stores XGBoost's mean bias is
-only +1.24, so the problem concentrates at TX_2.
+over-forecast — with a right-skewed tail to +40, on the original 8 spring
+folds. ETS at the same store was essentially unbiased (+0.80).
+
+**After the 52-fold rerun (2026-09-21):** smaller but still there. XGBoost
+bias at TX_2 is **+3.9 units/day** (~4%), and the over-forecast is no longer
+one store's: CA_4 +2.7, TX_3 +2.7, CA_1 +2.6, while CA_2 runs −3.6. ARIMA
+and ETS stay within ±0.5 at nine of ten stores. Across all stores XGBoost's
+mean bias is +0.9 against −0.1 for both classical models.
 
 **What passes:** the residuals are uncorrelated (Ljung-Box p = 0.50), so the
 method has taken everything *predictable*; the failure is in the level, not
@@ -30,35 +35,11 @@ the pattern.
   track the level, but the model may be leaning on `day_of_year`.
 - Leave it, and report it as a finding.
 
-**Parked until** the evaluation method is settled (fold count below), since a
-wider window may change the picture.
+**Parked until** the 52-fold rerun (2026-09-21) is read: a full year of
+scored weeks may change the picture, and the holiday-proximity features give
+the model a way to attribute spikes to the calendar instead of the level.
 
-### 2. Fold count — 8 folds is one season slice
-
-**Found:** 8 folds × 7 days scores 28 Mar – 22 May 2016 only. Every result is
-from spring. The January trough and the holiday spike — where a seasonal
-model earns or loses its keep — are never scored.
-
-**What FPP says (§5.10):** no prescribed count. The only constraint is that
-"the earliest observations are not considered as test sets." The book's own
-example uses *every* possible origin. So more folds, not fewer, is the
-book's direction.
-
-**Options, all one `Config` change:**
-
-| `n_folds` | days scored | held-out from | run time |
-|---|---|---|---|
-| 8 (now) | 56 | 28 Mar 2016 | ~35 s |
-| 26 | 182 | ~22 Nov 2015 | ~2 min |
-| 52 | 364 | ~24 May 2015 | ~4 min |
-
-**Cost:** widening moves the classification cutoff (step 3) earlier by the
-same amount, since both read `Config.holdout_start`. At 52 folds the
-classification window still has four years.
-
-**Recommendation:** 26.
-
-### 3. Horizon is confounded with weekday
+### 2. Horizon is confounded with weekday
 
 **Found:** every fold origin is a Sunday, because origins step by exactly 7
 days. So h = 1 is always Monday and h = 7 is always Sunday. The
@@ -105,6 +86,32 @@ write-up. If it is, fix it; if RMSSE-by-store is the headline, note it.
 ## Resolved
 
 *(decisions recorded here as they are made)*
+
+- **Fold count: 52.** FPP prescribes none (§5.10's example uses every
+  origin); the only sizing text is §5.8's "about 20% of the sample, at least
+  as long as the horizon". One year of weekly folds is ~20% of the history
+  and is the shortest layout that scores every season once. Every table is
+  reported split into *normal* and *holiday* folds so the two are never
+  averaged together. Decided 2026-09-21.
+- **Which holidays count.** Measured, not assumed: `step3_explore.event_effects`
+  gives each calendar event's sales ratio to a same-weekday baseline. Seven
+  events clear a 15% bar on the day or its two-day run-up (Christmas,
+  Thanksgiving, Labor Day, Independence Day, Valentine's Day, New Year,
+  Easter). They drive `is_holiday` / `days_to_holiday` / `days_since_holiday`
+  and the holiday-fold split. Decided 2026-09-21.
+- **Christmas Day is a closure, not demand.** Every M5 store records zero;
+  treated as missing per FPP §13.7 - imputed with the same-weekday mean of
+  the surrounding weeks so the following week's features are sane, flagged
+  `closure`, and excluded from every score. Decided 2026-09-21.
+- **ARIMA joins the comparison, ARMA does not.** Seasonal ARIMA with holiday,
+  pre-holiday and SNAP regressors (FPP Ch. 9-10); order chosen once per series
+  by AICc at fixed differencing (§9.7). A plain ARMA is ARIMA without the
+  seasonal term and cannot hold a weekly pattern on daily data. Decided
+  2026-09-21.
+- **Lag-364 seasonal naive added.** "This day last year" is what an orderer
+  looks at before a holiday; the lag-7 version is the default screen. Both
+  are benchmarks so the holiday-week comparison is against what a good
+  orderer does, not only the default. Decided 2026-09-21.
 
 - **Private filename in `34eddc0`'s `.gitignore`** — left as is. It is a
   filename, not content; the pattern was replaced with a wildcard from the

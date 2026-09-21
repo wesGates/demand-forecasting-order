@@ -74,6 +74,14 @@ def calendar_features(rows: pd.DataFrame, use_price: bool = False) -> pd.DataFra
     out["day_of_year"] = date.dt.dayofyear
     out["snap"] = rows["snap"].astype("int8")
     out["is_event"] = rows["event_name_1"].notna().astype("int8")
+    # Holiday proximity, from step 2's calendar columns. `is_event` above fires
+    # on all 30 calendar events; these three describe only the events that
+    # measurably move the item, and let a model learn the run-up and the
+    # hangover rather than just the day - the run-up to Christmas in this data
+    # is larger than most holidays' own day.
+    out["is_holiday"] = rows["is_holiday"].astype("int8")
+    out["days_to_holiday"] = rows["days_to_holiday"].astype("int16")
+    out["days_since_holiday"] = rows["days_since_holiday"].astype("int16")
     if use_price:
         out["sell_price"] = rows["sell_price"].astype("float32")
     return out
@@ -214,7 +222,7 @@ MIN_HISTORY = max(max(LAGS), max(ROLL_WINDOWS), 7 * max(DOW_WINDOWS))
 # Bump whenever the feature definitions above change. Step 5 caches each
 # series' supervised matrix to parquet keyed on this, so an edited feature
 # cannot silently be served from a file built by the old definition.
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2  # v2: holiday proximity (is_holiday, days_to/since_holiday)
 
 
 def build_supervised(

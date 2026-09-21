@@ -174,6 +174,67 @@ def series_stats(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return out.sort_values(["item_id", "mean_sales"], ascending=[True, False])
 
 
+def event_effects(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
+    """
+    How much each calendar event moves sales, relative to a same-weekday
+    baseline - the evidence behind `step2_data.MAJOR_EVENTS`.
+
+    For every event occurrence and every store, sales on the day (and on the
+    two days before and the day after) are divided by the mean of the same
+    weekday in the four weeks either side, skipping any week whose matching
+    day is itself an event. The ratios are averaged over stores and years.
+
+    A ratio of 1.70 means the day ran 70% above an ordinary same-weekday; 0.01
+    means the store was shut. One table, sorted by the size of the effect, is
+    what settles "which holidays matter for this item" - the alternative is to
+    assert a list and hope.
+    """
+    events = pd.concat(
+        [
+            calendar.dropna(subset=["event_name_1"])[
+                ["date", "event_name_1", "event_type_1"]
+            ],
+            calendar.dropna(subset=["event_name_2"])[
+                ["date", "event_name_2", "event_type_2"]
+            ].rename(
+                columns={"event_name_2": "event_name_1", "event_type_2": "event_type_1"}
+            ),
+        ]
+    ).sort_values("date")
+    event_days = set(events["date"])
+    wide = df.pivot(index="date", columns="id", values="sales")
+
+    def baseline(day: pd.Timestamp) -> pd.Series | None:
+        ref = [day + pd.Timedelta(days=7 * k) for k in (-4, -3, -2, -1, 1, 2, 3, 4)]
+        ref = [d for d in ref if d in wide.index and d not in event_days]
+        return wide.loc[ref].mean() if ref else None
+
+    offsets = {"d-2": -2, "d-1": -1, "d0": 0, "d+1": 1}
+    rows = []
+    for _, ev in events.iterrows():
+        if ev["date"] not in wide.index:
+            continue
+        rec = {
+            "event": ev["event_name_1"],
+            "type": ev["event_type_1"],
+            "year": ev["date"].year,
+        }
+        for label, off in offsets.items():
+            day = ev["date"] + pd.Timedelta(days=off)
+            base = baseline(day) if day in wide.index else None
+            if base is not None:
+                rec[label] = float((wide.loc[day] / base).mean())
+        rows.append(rec)
+
+    table = (
+        pd.DataFrame(rows)
+        .groupby(["type", "event"])
+        .agg(n_years=("year", "size"), **{k: (k, "mean") for k in offsets})
+    )
+    table["max_deviation"] = (table[list(offsets)] - 1).abs().max(axis=1)
+    return table.sort_values("max_deviation", ascending=False)
+
+
 def class_table(stats: pd.DataFrame) -> pd.DataFrame:
     """Item x store grid of demand classes - the study design at a glance."""
     return stats.pivot(index="item_id", columns="store_id", values="demand_class")

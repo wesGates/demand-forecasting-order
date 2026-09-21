@@ -83,7 +83,14 @@ class Config:
     # cross-validation" with a rolling forecasting origin (§5.10). Each fold
     # steps one `test_window` further back. More folds recover sample size
     # without ever lengthening the scored window.
-    n_folds: int = 8
+    #
+    # FPP prescribes no count (§5.10's own example uses every origin). The only
+    # sizing guidance is §5.8's: a test set of roughly 20% of the sample, and
+    # at least as long as the horizon. 52 weekly folds is one full year - about
+    # 20% of the five-year history - and, more to the point, the only layout
+    # that scores every season once: the holiday run-up, the January trough
+    # and the ordinary weeks between. 8 folds scored a single spring slice.
+    n_folds: int = 52
 
     # A series must have at least this many days of history at a fold's origin
     # or that fold is skipped for it. 365 keeps one full annual cycle in view.
