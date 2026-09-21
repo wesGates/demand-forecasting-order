@@ -55,6 +55,7 @@ drops them: forecasting a locked door is not a demand question.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from pathlib import Path
 
@@ -141,27 +142,46 @@ def holiday_window(frame: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 
 
+def _code_digest(path: Path) -> str:
+    """SHA-1 of a module's syntax tree with docstrings removed - the code, not the prose."""
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(
+            node, ast.Module | ast.FunctionDef | ast.ClassDef | ast.AsyncFunctionDef
+        ):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+            ):
+                if isinstance(body[0].value.value, str):
+                    node.body = body[1:] or [ast.Pass()]
+    return hashlib.sha1(ast.dump(tree).encode()).hexdigest()
+
+
 def _predictions_path(cfg: Config, methods: list[str]):
     """
     Cache location for a full walk-forward run.
 
     The key covers everything that could change a forecast: the config, the
-    method list, the feature and panel versions, and the *source text* of the
-    model and harness modules. Editing a model therefore invalidates the cache
-    without anyone remembering to bump a number.
+    method list, the feature and panel versions, and the *code* of the model
+    and harness modules. Editing a model therefore invalidates the cache
+    without anyone remembering to bump a number. Comments and docstrings are
+    stripped before hashing, so rewording a docstring does not throw away a
+    twenty-minute run.
     """
     from src import step4_models
     from src.step2_data import CACHE_VERSION
 
-    here = Path(__file__)
-    source = here.read_text() + Path(step4_models.__file__).read_text()
+    code = _code_digest(Path(__file__)) + _code_digest(Path(step4_models.__file__))
     key = repr(
         (
             sorted((k, repr(v)) for k, v in cfg.__dict__.items()),
             methods,
             FEATURE_VERSION,
             CACHE_VERSION,
-            hashlib.sha1(source.encode()).hexdigest(),
+            code,
         )
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]

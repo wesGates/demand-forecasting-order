@@ -184,10 +184,12 @@ def event_effects(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
     weekday in the four weeks either side, skipping any week whose matching
     day is itself an event. The ratios are averaged over stores and years.
 
-    A ratio of 1.70 means the day ran 70% above an ordinary same-weekday; 0.01
-    means the store was shut. One table, sorted by the size of the effect, is
-    what settles "which holidays matter for this item" - the alternative is to
-    assert a list and hope.
+    A ratio of 1.70 means the day ran 70% above an ordinary same-weekday. A
+    closure day (Christmas) is NaN on the day: the stores were shut and the
+    loader imputed the value, so there is no demand to measure - its run-up is
+    what counts. One table, sorted by the size of the effect, is what settles
+    "which holidays matter for this item" - the alternative is to assert a
+    list and hope.
     """
     events = pd.concat(
         [
@@ -203,6 +205,11 @@ def event_effects(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
     ).sort_values("date")
     event_days = set(events["date"])
     wide = df.pivot(index="date", columns="id", values="sales")
+    # A closure day's sales were imputed by the loader (see step 2). It has no
+    # demand to measure, so it must not appear as "ratio 1.0" here.
+    if "closure" in df:
+        shut = df.loc[df["closure"], "date"].unique()
+        wide.loc[wide.index.isin(shut)] = np.nan
 
     def baseline(day: pd.Timestamp) -> pd.Series | None:
         ref = [day + pd.Timedelta(days=7 * k) for k in (-4, -3, -2, -1, 1, 2, 3, 4)]

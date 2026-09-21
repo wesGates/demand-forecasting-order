@@ -6,19 +6,31 @@ grids and notebooks without the module owning any figure layout.
 
 Design rules followed here, so they are consistent and defensible:
 
+- **The book's look.** Every figure uses the style of *Forecasting: Principles
+  and Practice* (the Pythonic edition's figures, which follow ggplot2's default
+  theme): a light grey panel with white gridlines, no axis spines, black
+  actuals, and the Okabe-Ito palette - the colour-blind-safe set the book
+  itself uses. Matching the book makes the report's figures read as
+  continuations of the reference, not as a second visual language.
+- **Legends sit below the axes, never on the data.** Every legend is placed
+  by `legend_below`; nothing is ever drawn inside the plotting area.
 - **One hue per single-series chart.** Colour carries identity, never magnitude.
   A darker-where-bigger bar chart double-encodes the bar length and wastes the
   only free channel.
 - **Emphasis over enumeration.** Where one series matters, it is drawn in the
   series colour and everything else recedes to grey - rather than giving every
   series its own hue and asking the reader to decode a legend.
-- **Recessive chrome.** Solid hairline grid one shade off the surface, no
-  dashes; dashing reads as "threshold" when it is only a grid.
 - **Selective labels.** Direct-label the points that carry the argument, not
   every point.
+
+Layout is matplotlib's constrained layout, switched on in `use_style`, which
+makes room for legends placed outside the axes. Do not call `tight_layout()`
+on these figures - it replaces the engine and the legends end up clipped.
 """
 
 from __future__ import annotations
+
+import warnings
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -28,27 +40,34 @@ import pandas as pd
 from src.step3_explore import ADI_CUT, CV2_CUT
 
 # --- palette ---------------------------------------------------------------
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_SOFT = "#52514e"
-INK_MUTED = "#898781"
-GRID = "#e1e0d9"
-AXIS = "#c3c2b7"
+# Sampled from the book's own figures (otexts.com/fpppy): the panel is
+# rgb(229,229,229), the grid is white, text is black, ticks are mid grey.
+SURFACE = "#ffffff"  # figure background
+PANEL = "#e5e5e5"  # plotting area
+INK = "#000000"
+INK_SOFT = "#4d4d4d"
+INK_MUTED = "#7f7f7f"
+GRID = "#ffffff"
+AXIS = "#7f7f7f"  # reference lines (zero, cut points, the holdout boundary)
 
-SERIES_1 = "#2a78d6"  # blue
-SERIES_2 = "#eb6834"  # orange
-SERIES_3 = "#1baf7a"  # aqua
+# Okabe-Ito, as the book uses it. The first three carry the three models.
+SERIES_1 = "#0072B2"  # blue
+SERIES_2 = "#D55E00"  # vermillion
+SERIES_3 = "#009E73"  # green
+SERIES_4 = "#CC79A7"  # pink
+SERIES_5 = "#E69F00"  # orange
 
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def use_style() -> None:
-    """Apply the chart chrome. Call once at the top of a notebook."""
+    """Apply the book's chart chrome. Call once at the top of a notebook."""
     plt.rcParams.update(
         {
             "figure.facecolor": SURFACE,
-            "axes.facecolor": SURFACE,
-            "axes.edgecolor": AXIS,
+            "figure.constrained_layout.use": True,  # makes room for legends below
+            "axes.facecolor": PANEL,
+            "axes.edgecolor": PANEL,
             "axes.labelcolor": INK_SOFT,
             "axes.titlecolor": INK,
             "axes.titlesize": 10,
@@ -58,19 +77,116 @@ def use_style() -> None:
             "axes.axisbelow": True,  # chrome behind the data, never over it
             "axes.spines.top": False,
             "axes.spines.right": False,
+            "axes.spines.left": False,
+            "axes.spines.bottom": False,
             "grid.color": GRID,
-            "grid.linewidth": 0.8,
+            "grid.linewidth": 1.0,
             "grid.linestyle": "-",
-            "xtick.color": INK_MUTED,
-            "ytick.color": INK_MUTED,
+            "xtick.color": INK_SOFT,
+            "ytick.color": INK_SOFT,
             "xtick.labelsize": 8,
             "ytick.labelsize": 8,
+            "xtick.major.size": 3,
+            "ytick.major.size": 3,
             "text.color": INK,
             "legend.frameon": False,
             "legend.fontsize": 8,
             "figure.dpi": 110,
         }
     )
+
+
+# Figures already handed to `show`, so a later call does not re-display them.
+# Tracked by identity rather than figure number - numbers are reused once a
+# figure is closed.
+_shown: set[int] = set()
+
+
+def show() -> None:
+    """
+    Show every figure created since the last call - inline *and* in a window.
+
+    In a notebook session with a GUI backend (`%matplotlib tk`), the window
+    opens as usual, and a PNG of the figure is also sent to the notebook's
+    output, so the Interactive Window keeps a scrollable record while the
+    window is there for zooming and hovering. With the inline backend it is
+    plain `plt.show()`, one image per figure. In a plain script run it is a
+    no-op beyond `plt.show()`, which under Agg does nothing.
+
+    Every plotting cell in the notebooks ends with this call, and nothing
+    else, so no figure is ever displayed twice.
+    """
+    import matplotlib
+
+    figs = [plt.figure(n) for n in plt.get_fignums() if id(plt.figure(n)) not in _shown]
+    backend = matplotlib.get_backend().lower()
+    if "inline" in backend:
+        plt.show()
+        return
+    try:
+        from IPython import get_ipython
+        from IPython.display import Image, display
+    except ImportError:
+        plt.show()
+        return
+    if get_ipython() is not None:
+        import io
+
+        for fig in figs:
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=fig.dpi, bbox_inches="tight")
+            display(Image(buf.getvalue()))
+            _shown.add(id(fig))
+    with warnings.catch_warnings():
+        # Under a non-GUI backend (a script run on Agg) there is no window to
+        # open, and matplotlib says so; that is expected, not a problem.
+        warnings.simplefilter("ignore", UserWarning)
+        plt.show(block=False)
+
+
+def legend_below(target, ncols: int | None = None, handles=None, labels=None):
+    """
+    Place the one legend for an Axes or a Figure below the plotting area.
+
+    This is the only legend call in the module. On an Axes it hangs under the
+    x-axis (below the tick labels and any x-label); on a Figure it sits under
+    every panel, gathering one entry per distinct label across the panels.
+    Constrained layout, switched on in `use_style`, makes room for it. Returns
+    the legend, or None when there is nothing to label.
+    """
+    if handles is None:
+        axes = (
+            target.axes
+            if hasattr(target, "axes") and not hasattr(target, "plot")
+            else [target]
+        )
+        seen: dict[str, object] = {}
+        for ax in axes:
+            for h, lab in zip(*ax.get_legend_handles_labels(), strict=True):
+                seen.setdefault(lab, h)
+        handles, labels = list(seen.values()), list(seen.keys())
+    if not handles:
+        return None
+    ncols = ncols or min(len(labels), 6)
+    if hasattr(target, "plot"):  # an Axes
+        # A fixed distance in points below the axes - enough to clear the tick
+        # labels, and the x-label when there is one - rather than a fraction of
+        # the axes height, which would put the legend far away on a tall panel.
+        from matplotlib.transforms import offset_copy
+
+        drop = 34 if target.get_xlabel() else 20
+        anchor = offset_copy(
+            target.transAxes, target.figure, x=0, y=-drop, units="points"
+        )
+        return target.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0),
+            bbox_transform=anchor,
+            ncols=ncols,
+        )
+    return target.legend(handles, labels, loc="outside lower center", ncols=ncols)
 
 
 def _series(df: pd.DataFrame, series_id: str) -> pd.DataFrame:
@@ -199,24 +315,9 @@ def plot_store_grid(
 
     axes[0].set_ylabel("units/day")
     fig.suptitle(
-        f"{item_id} — daily sales by store, {roll}-day rolling mean",
-        y=1.0,
-        fontsize=11,
-        color=INK,
+        f"{item_id} — daily sales by store, {roll}-day rolling mean", fontsize=11
     )
-    # One legend for the whole figure, in the top-right margin, rather than
-    # inside the first panel where it sat on top of that store's data.
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="upper right",
-        ncols=len(labels),
-        fontsize=8,
-        bbox_to_anchor=(0.995, 1.005),
-        frameon=False,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    legend_below(fig)
     return fig
 
 
@@ -318,7 +419,7 @@ def plot_seasonality_by_store(
     axes[0].set_ylabel("× the store's own mean")
     # Only the mean line goes in the legend - the store lines are labelled for
     # the hover tooltip, not for a ten-entry legend box.
-    axes[0].legend(handles=[mean_line], loc="upper left")
+    legend_below(axes[0], handles=[mean_line], labels=[mean_line.get_label()])
     return axes
 
 
@@ -399,29 +500,54 @@ def plot_demand_class_map(
         linewidths=2,
         zorder=3,
     )
-    for _, r in focus.iterrows():
-        ax.annotate(
-            r["store_id"],
-            (r["adi"], r["cv2"]),
-            textcoords="offset points",
-            xytext=(7, 3),
-            fontsize=7.5,
-            color=INK_SOFT,
-        )
+    # Labels are stacked with a minimum vertical gap and joined to their point
+    # by a hairline, so stores that sit on top of each other (a smooth item's
+    # stores all do) stay readable. Alternate sides halve the stacking.
+    ordered = focus.sort_values("cv2")
+    if len(ordered):
+        # In CV² units: the axis always spans at least the 0.49 cut, so a
+        # fixed gap reads the same on every item.
+        gap = 0.022
+        last = {True: -np.inf, False: -np.inf}
+        for i, (_, r) in enumerate(ordered.iterrows()):
+            right = i % 2 == 0
+            y = max(float(r["cv2"]), last[right] + gap)
+            last[right] = y
+            ax.annotate(
+                r["store_id"],
+                (r["adi"], r["cv2"]),
+                xytext=(r["adi"] + (0.012 if right else -0.012), y),
+                textcoords="data",
+                ha="left" if right else "right",
+                va="center",
+                fontsize=7.5,
+                color=INK_SOFT,
+                arrowprops=dict(
+                    arrowstyle="-", color=INK_MUTED, lw=0.6, shrinkA=0, shrinkB=2
+                ),
+            )
 
     ax.axvline(ADI_CUT, color=AXIS, lw=1.0, zorder=1)
     ax.axhline(CV2_CUT, color=AXIS, lw=1.0, zorder=1)
+
+    # Room below and left of the cloud, so the corner labels have somewhere to
+    # sit that is not on a data point. A smooth item's stores all crowd the
+    # bottom-left corner - which is where "smooth" has to be written.
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    ax.set_xlim(x0 - 0.04 * (x1 - x0), x1)
+    ax.set_ylim(min(0.0, y0) - 0.06 * (y1 - y0), y1)
 
     # Quadrant names sit in the corners, in muted ink - they label regions of
     # the plot, not data points.
     x0, x1 = ax.get_xlim()
     y0, y1 = ax.get_ylim()
-    pad = 0.02
+    px, py = 0.01 * (x1 - x0), 0.02 * (y1 - y0)
     for name, (x, y, ha, va) in {
-        "smooth": (x0 + pad, y0 + pad, "left", "bottom"),
-        "erratic": (x0 + pad, y1 - pad, "left", "top"),
-        "intermittent": (x1 - pad, y0 + pad, "right", "bottom"),
-        "lumpy": (x1 - pad, y1 - pad, "right", "top"),
+        "smooth": (x0 + px, y0 + py, "left", "bottom"),
+        "erratic": (x0 + px, y1 - py, "left", "top"),
+        "intermittent": (x1 - px, y0 + py, "right", "bottom"),
+        "lumpy": (x1 - px, y1 - py, "right", "top"),
     }.items():
         ax.text(x, y, name, ha=ha, va=va, fontsize=8, color=INK_MUTED, style="italic")
 
@@ -491,7 +617,7 @@ def plot_snap_effect(
     ax.set_ylabel("mean units/day")
     ax.set_title(f"{item_id} — SNAP benefit days vs ordinary days")
     ax.grid(axis="x", visible=False)
-    ax.legend(loc="upper right")
+    legend_below(ax)
     return ax
 
 
@@ -617,7 +743,7 @@ def plot_year_overlay(
     ax.set_xlabel("day of year")
     ax.set_ylabel(f"{roll}-day average")
     ax.set_title("Year-on-year overlay")
-    ax.legend(loc="best", ncols=2)
+    legend_below(ax, ncols=len(years))
     return ax
 
 
@@ -651,57 +777,71 @@ def plot_price_relationship(
     return ax
 
 
-def plot_event_effect(
-    df: pd.DataFrame, item_id: str, ax: plt.Axes | None = None
+def plot_event_effects(
+    table: pd.DataFrame,
+    major: tuple[str, ...] | list[str] = (),
+    ax: plt.Axes | None = None,
+    threshold: float = 0.15,
 ) -> plt.Axes:
     """
-    Sales on calendar-event days by event type, against the ordinary-day level.
+    Every calendar event's effect on sales - the evidence behind the holiday
+    set - from `step3_explore.event_effects`.
 
-    Holidays are the other calendar feature known years in advance. Each bar is
-    that event type's mean expressed as a percentage difference from the
-    ordinary-day mean, so stores of very different size pool into one readable
-    number.
+    Two markers per event: the event day itself, and the larger of the two
+    days before it (the run-up). Both are ratios to a same-weekday baseline,
+    so 1.0 is "an ordinary day" and 1.7 is "70% above". Events in `major`
+    are drawn in colour; the rest recede to grey. The dotted lines mark the
+    threshold an event had to clear, in either direction, to be counted.
 
-    The `n` beside each bar counts **distinct event dates**, not rows. Ten
-    stores on the same Mother's Day are one observation of Mother's Day, not
-    ten - counting rows would overstate the evidence tenfold. Some types occur
-    only a handful of times over five years, and a large bar resting on n=16
-    dates is a hint rather than a finding.
-
-    The four types are M5's own labels: Sporting (Super Bowl, NBA Finals),
-    Cultural (Valentine's, Mother's/Father's Day, Halloween, ...), National (US
-    federal holidays), Religious (Easter, Ramadan, Chanukah, ...).
+    A closure day (Christmas) has no day marker: the stores were shut, so there
+    is no demand to measure and the loader has imputed the value. Its run-up
+    is still drawn, and it is the largest in the calendar - which is exactly
+    why an on/off flag is not enough.
     """
     ax = ax or plt.gca()
-    g = df[df["item_id"] == item_id].copy()
-    g["event"] = g["event_type_1"].fillna("(none)")
+    t = table.reset_index().sort_values("max_deviation")
+    y = np.arange(len(t))
+    is_major = t["event"].isin(major).to_numpy()
+    runup = t[["d-2", "d-1"]].max(axis=1).to_numpy()
 
-    base = g.loc[g["event"] == "(none)", "sales"].mean()
-    effect = (g.groupby("event", observed=True)["sales"].mean() / base - 1) * 100
-    effect = effect.drop("(none)", errors="ignore").sort_values()
-    n_dates = g.groupby("event", observed=True)["date"].nunique()
-
-    ax.barh(list(effect.index), effect.to_numpy(), color=SERIES_1, height=0.62)
-    ax.axvline(0, color=AXIS, lw=1.0)
-    for name, val in effect.items():
-        # Sit the count just beyond the bar end, on whichever side that is -
-        # a fixed offset would print it on top of every negative bar.
-        ax.annotate(
-            f"n={n_dates[name]} dates",
-            (val, name),
-            textcoords="offset points",
-            xytext=(6 if val >= 0 else -6, 0),
-            ha="left" if val >= 0 else "right",
-            va="center",
-            fontsize=7.5,
-            color=INK_MUTED,
+    for sel, colour, alpha in ((~is_major, INK_MUTED, 0.7), (is_major, SERIES_1, 1.0)):
+        ax.scatter(
+            t["d0"].to_numpy()[sel], y[sel], s=34, color=colour, alpha=alpha, zorder=3
         )
-    # Room for the "n=NN dates" label beyond the longest bar on either side -
-    # without it the label on the most negative bar runs into the tick labels.
-    ax.margins(x=0.32)
-    ax.set_xlabel("% difference from an ordinary day")
-    ax.set_title(f"{item_id} — calendar event effect")
+        ax.scatter(
+            runup[sel],
+            y[sel],
+            s=34,
+            facecolors="none",
+            edgecolors=colour,
+            linewidths=1.4,
+            alpha=alpha,
+            zorder=3,
+        )
+    # A legend needs handles of its own - the coloured points above carry no
+    # label because colour means "selected", not a series.
+    ax.scatter([], [], s=34, color=INK_SOFT, label="the day itself")
+    ax.scatter(
+        [],
+        [],
+        s=34,
+        facecolors="none",
+        edgecolors=INK_SOFT,
+        linewidths=1.4,
+        label="run-up (larger of the two days before)",
+    )
+    ax.axvline(1.0, color=AXIS, lw=1.0, zorder=1)
+    for x in (1 - threshold, 1 + threshold):
+        ax.axvline(x, color=AXIS, lw=0.8, ls=":", zorder=1)
+
+    ax.set_yticks(y, t["event"], fontsize=7.5)
+    for tick, m in zip(ax.get_yticklabels(), is_major, strict=True):
+        tick.set_color(INK if m else INK_MUTED)
+    ax.set_xlabel("sales ÷ same-weekday baseline")
+    ax.set_title("Calendar events: how much each one moves sales")
     ax.grid(axis="y", visible=False)
+    ax.margins(y=0.02)
+    legend_below(ax)
     return ax
 
 
@@ -733,20 +873,46 @@ def plot_zero_rate(
 # Step 5: evaluating the forecasts (FPP §5.4, §5.8, §5.10)
 # --------------------------------------------------------------------------- #
 
-# Models carry a hue; benchmarks recede to grey. Seven methods is past the
-# three hues a chart can carry safely, and the story is "the two models
-# against the pack", so that is what the colour says.
+# Models carry a hue; benchmarks recede to grey. Nine methods is past the
+# hues a chart can carry safely, and the story is "the models against the
+# pack", so that is what the colour says. Benchmarks are told apart by line
+# style and marker instead, so the legend still identifies each one.
 MODEL_COLOURS = {"xgboost": SERIES_1, "ets": SERIES_2, "arima": SERIES_3}
+BENCH_LINES = {
+    "seasonal_naive": "--",
+    "moving_average_28": ":",
+    "seasonal_naive_364": "-.",
+    "mean": (0, (5, 2, 1, 2)),
+    "naive": (0, (1, 1)),
+    "drift": (0, (3, 1)),
+}
+BENCH_MARKERS = {
+    "seasonal_naive": "s",
+    "moving_average_28": "D",
+    "seasonal_naive_364": "^",
+    "mean": "v",
+    "naive": "x",
+    "drift": "+",
+}
 
-# The subset drawn by default where seven lines would be a tangle: both
+# The subset drawn by default where nine lines would be a tangle: the three
 # models plus the two benchmarks that actually compete.
 DEFAULT_METHODS = ("xgboost", "ets", "arima", "moving_average_28", "seasonal_naive")
 
 
 def _method_style(name: str, kind: str) -> dict:
     if kind == "model":
-        return dict(color=MODEL_COLOURS.get(name, SERIES_3), lw=2.0, alpha=1.0, zorder=3)
-    return dict(color=INK_MUTED, lw=1.1, alpha=0.6, zorder=2)
+        return dict(color=MODEL_COLOURS.get(name, SERIES_4), lw=1.8, alpha=1.0, zorder=3)
+    return dict(
+        color=INK_SOFT, lw=1.1, alpha=0.75, zorder=2, ls=BENCH_LINES.get(name, "-")
+    )
+
+
+def _drop_closures(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Closure days are imputed, not observed - they are never scored or drawn as residuals."""
+    if "closure" in predictions:
+        return predictions[~predictions["closure"].astype(bool)]
+    return predictions
 
 
 def _present(predictions: pd.DataFrame, methods) -> list[str]:
@@ -800,7 +966,7 @@ def plot_forecast_folds(
 
     if origins is not None:
         for o in origins:
-            ax.axvline(o, color=GRID, lw=0.8, zorder=1)
+            ax.axvline(o, color="#d4d4d4", lw=0.7, zorder=1)
     if holdout_start is not None:
         ax.axvline(holdout_start, color=AXIS, lw=1.2, zorder=1)
 
@@ -808,11 +974,35 @@ def plot_forecast_folds(
     ax.set_title(
         f"{series_id.split('_evaluation')[0]} — forecasts against actuals, every fold"
     )
-    ax.legend(loc="upper left", ncols=len(methods) + 1)
     ax.margins(x=0.01)
-    ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+    _date_axis(ax, start, end)
+    legend_below(ax, ncols=len(methods) + 1)
     return ax
+
+
+def _date_axis(ax: plt.Axes, start: pd.Timestamp, end: pd.Timestamp) -> None:
+    """
+    Tick a date axis at a density the panel can carry: weeks, months, or years,
+    thinned so that roughly one tick per inch of panel width remains.
+    """
+    days = (end - start).days
+    width_in = ax.get_position().width * ax.figure.get_figwidth()
+    max_ticks = max(3, int(width_in * 1.1))
+    if days <= 90:
+        weeks = days // 7 + 1
+        step = max(1, int(np.ceil(weeks / max_ticks)))
+        ax.xaxis.set_major_locator(
+            mdates.WeekdayLocator(byweekday=mdates.MO, interval=step)
+        )
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+    elif days <= 800:
+        months = days // 30 + 1
+        step = max(1, int(np.ceil(months / max_ticks)))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=step))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b\n%Y"))
+    else:
+        ax.xaxis.set_major_locator(mdates.YearLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 
 
 def plot_rmsse_by_horizon(
@@ -838,6 +1028,7 @@ def plot_rmsse_by_horizon(
     OPEN_QUESTIONS.md.
     """
     ax = ax or plt.gca()
+    predictions = _drop_closures(predictions)
     methods = _present(predictions, methods)
     p = predictions[predictions["method"].isin(methods)].copy()
     p["q2"] = ((p["forecast"] - p["actual"]) / p["scale"]) ** 2
@@ -850,7 +1041,7 @@ def plot_rmsse_by_horizon(
         ax.plot(
             s.index,
             s.to_numpy(),
-            marker="o",
+            marker=BENCH_MARKERS.get(name, "o"),
             ms=4,
             label=name,
             **_method_style(name, kind),
@@ -860,8 +1051,8 @@ def plot_rmsse_by_horizon(
     ax.set_ylabel("RMSSE")
     ax.set_title("Error by forecast horizon")
     ax.set_xticks(sorted(p["horizon"].unique()))
-    ax.legend(loc="upper left")
     ax.grid(axis="x", visible=False)
+    legend_below(ax)
     return ax
 
 
@@ -903,7 +1094,8 @@ def plot_rmsse_by_store(
             ax.scatter(
                 x,
                 table[name].to_numpy(),
-                s=22,
+                s=26,
+                marker=BENCH_MARKERS.get(name, "o"),
                 label=name,
                 color=style["color"],
                 alpha=style["alpha"],
@@ -914,8 +1106,8 @@ def plot_rmsse_by_store(
     ax.set_xticks(x, order)
     ax.set_ylabel("mean RMSSE over folds")
     ax.set_title("RMSSE by store, busiest first  (1.0 = seasonal naive on training data)")
-    ax.legend(loc="upper left", ncols=2)
     ax.grid(axis="x", visible=False)
+    legend_below(ax, ncols=min(len(methods), 5))
     return ax
 
 
@@ -945,23 +1137,31 @@ def plot_residual_diagnostics(
     The Ljung-Box p-value tests the ACF panel formally, at the lag FPP
     prescribes for seasonal data (2m, capped at T/5). Above 0.05 means the
     residuals are indistinguishable from white noise - the method has taken
-    everything predictable. These are held-out residuals over a short window,
-    so treat the verdict as a check, not a proof.
+    everything predictable.
+
+    **Read the ACF with one thing in mind.** FPP's residual tests are stated
+    for one-step-ahead residuals. These are 1- to 7-step-ahead errors, and
+    all seven days of a fold share one origin, so an error in the level at the
+    origin runs through the whole week. Multi-step errors are therefore
+    correlated out to lag h-1 *even for a perfect model* - a small
+    autocorrelation at lags 1-6 is the design, not a defect. What would be a
+    defect is a spike at lag 7 or beyond (a weekly pattern the method missed)
+    or a mean far from zero (bias).
     """
     if axes is None:
         _, axes = plt.subplots(1, 3, figsize=(13, 3.2))
+    predictions = _drop_closures(predictions)
     p = predictions[(predictions["id"] == series_id) & (predictions["method"] == method)]
     p = p.sort_values("target_date")
     r = (p["forecast"] - p["actual"]).to_numpy(dtype=float)
     n = len(r)
 
     # --- time plot ------------------------------------------------------
-    axes[0].plot(p["target_date"], r, color=SERIES_1, lw=1.2, marker="o", ms=3)
+    axes[0].plot(p["target_date"], r, color=SERIES_1, lw=0.9)
     axes[0].axhline(0, color=AXIS, lw=1.0)
     axes[0].set_title(f"residuals over time  (mean {r.mean():+.2f})")
     axes[0].set_ylabel("forecast − actual")
-    axes[0].xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
-    axes[0].xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+    _date_axis(axes[0], p["target_date"].min(), p["target_date"].max())
 
     # --- ACF, with FPP's portmanteau test ---------------------------------
     nlags = max(1, min(3 * season, n // 2))

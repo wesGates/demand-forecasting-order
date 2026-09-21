@@ -60,6 +60,7 @@ from src import plots
 from src.step1_problem import STUDY_ITEMS, Config
 from src.step2_data import load_panel
 from src.step3_explore import classification_cutoff, series_stats
+from src.step4_models import MODELS
 from src.step5_evaluate import (
     rmsse_by_store,
     run_walk_forward,
@@ -72,10 +73,20 @@ plots.use_style()
 ITEM = STUDY_ITEMS[0]
 
 # %%
+# Where figures appear. "tk" pops every figure out into its own resizable
+# window (zoom, pan, hover labels) AND keeps an inline copy in the Interactive
+# Window, because each plotting cell ends with `plots.show()`. "inline" keeps
+# only the inline copy. Change it and re-run this cell; it only affects
+# figures made after it runs. On a machine with no display, "tk" falls back
+# to "inline" by itself.
+FIGURE_BACKEND = "tk"
 try:
-    get_ipython().run_line_magic("matplotlib", "tk")  # noqa: F821  ("inline" to revert)
+    try:
+        get_ipython().run_line_magic("matplotlib", FIGURE_BACKEND)  # noqa: F821
+    except Exception:
+        get_ipython().run_line_magic("matplotlib", "inline")  # noqa: F821
 except NameError:
-    pass
+    pass  # not running under IPython - leave the backend alone
 
 # %% [markdown]
 # ## The problem definition
@@ -98,10 +109,18 @@ print(cfg.describe())
 # day ahead — that every number and plot below is computed from. There is
 # exactly one place where a forecast meets an actual.
 #
-# The first run builds each store's feature matrix (~8s per store) and caches
-# it; after that a full run takes under a minute. The validator
-# (`python -m src.validate`) should be green before any of these numbers are
-# quoted.
+# A full run takes on the order of twenty minutes — ARIMA is the slow one —
+# so the result is cached to parquet under a key that includes the config
+# *and the source of the model code*. Editing a model invalidates the cache
+# by itself; `run_walk_forward(..., use_cache=False)` forces a rerun. The
+# validator (`python -m src.validate`) should be green before any of these
+# numbers are quoted.
+#
+# Two things happen to the scored days before any number is computed. The
+# closure day the loader flagged (Christmas) is dropped — forecasting a shut
+# store is not a demand question. And every fold is tagged `normal` or
+# `holiday`: a fold is a holiday fold if any scored day falls from two days
+# before a major event to one day after it.
 
 # %%
 df = load_panel(cfg)
@@ -129,7 +148,7 @@ print(
 #
 # **What to look for:**
 #
-# - How far the models sit below the benchmarks, and **whether the two models
+# - How far the models sit below the benchmarks, and **whether the three models
 #   are meaningfully apart from each other.** Medians within a few hundredths
 #   are a tie; say so rather than crowning one.
 # - **Bias.** Positive means over-forecasting. For replenishment this matters
@@ -137,6 +156,12 @@ print(
 # - Whether `naive` and `drift` sit near or above 1.0. With a seasonal-naive
 #   denominator, "repeat yesterday" *should* score worse than 1.0 on a series
 #   with a weekly cycle.
+# - **The two week columns.** `rmsse_normal` and `rmsse_holiday` are the same
+#   score on the ordinary folds and on the holiday folds. Quote both, never
+#   just the pooled mean: a pooled number cannot say whether a method's
+#   advantage comes from the ordinary weeks or from the handful where the
+#   calendar does the work. ETS is the one model that cannot be told a
+#   holiday is coming, and the holiday column is where that shows.
 
 # %%
 summarise(scores).round(3)
@@ -150,10 +175,18 @@ summarise(scores).round(3)
 # **What to look for:** read down the volume gradient. If the models' advantage
 # over `moving_average_28` narrows — or reverses — at the quietest stores, that
 # is the pattern to report. It says the models are earning their keep where
-# there is signal to learn, and not where there isn't.
+# there is signal to learn, and not where there isn't. Then compare the
+# holiday-week table: the store ranking can change when the calendar is
+# doing the work.
 
 # %%
 rmsse_by_store(scores).round(3)
+
+# %%
+rmsse_by_store(scores, "normal").round(3)
+
+# %%
+rmsse_by_store(scores, "holiday").round(3)
 
 # %% [markdown]
 # ## Win rates
@@ -165,11 +198,17 @@ rmsse_by_store(scores).round(3)
 #
 # **What to look for:** `moving_average_28` against `seasonal_naive`. A mean-based
 # method beating a single-past-day method more often than not is the √2 effect
-# from step 4's notes, and it is why this project reports five benchmarks
-# instead of one.
+# from step 4's notes, and it is why this project reports six benchmarks
+# instead of one. And `seasonal_naive_364` — "this day last year", what an
+# orderer checks before a holiday — against `seasonal_naive`, "this day last
+# week": on an item whose level drifts, last year's lookup carries the old
+# level with it, and the holiday-week table says whether it helps at all.
 
 # %%
 win_rates(scores).round(2)
+
+# %%
+win_rates(scores, "holiday").round(2)
 
 # %% [markdown]
 # ## Forecasts against actuals — FPP §5.8
@@ -179,7 +218,7 @@ win_rates(scores).round(2)
 # before any table does. Drawn for the busiest store; change `top_id` to look
 # at another.
 #
-# **Reading it:** black is what sold. Coloured lines are the two models, grey
+# **Reading it:** black is what sold. Coloured lines are the three models, grey
 # the two strongest benchmarks. The faint vertical lines are fold origins —
 # every seventh day the forecaster was re-run from a fresh standing point, so a
 # kink there is the origin moving, not a property of the method. The heavier
@@ -195,8 +234,7 @@ fig, ax = plt.subplots(figsize=(12.5, 3.6))
 plots.plot_forecast_folds(
     predictions, df, top_id, holdout_start=cutoff, origins=origins, ax=ax
 )
-fig.tight_layout()
-fig
+plots.show()
 
 # %% [markdown]
 # ## Error by horizon — FPP §5.10
@@ -220,8 +258,7 @@ fig
 # %%
 fig, ax = plt.subplots(figsize=(7, 3.4))
 plots.plot_rmsse_by_horizon(predictions, ax=ax)
-fig.tight_layout()
-fig
+plots.show()
 
 # %% [markdown]
 # ## RMSSE by store — the study's own view
@@ -236,8 +273,7 @@ fig
 # %%
 fig, ax = plt.subplots(figsize=(10, 3.8))
 plots.plot_rmsse_by_store(scores, stats, item_id=ITEM, ax=ax)
-fig.tight_layout()
-fig
+plots.show()
 
 # %% [markdown]
 # ## Residual diagnostics — FPP §5.4
@@ -261,18 +297,24 @@ fig
 # residuals have mean m, simply add m to all forecasts."* Correlation is
 # harder, and the book defers it to Chapter 10.
 #
-# These are held-out residuals over a short window — 56 days per store — so
-# treat the verdicts as a check, not a proof.
+# These are held-out residuals over a full year per store, so the verdicts
+# carry weight. But read the ACF with one thing in mind: FPP states the test
+# for one-step residuals, and these are 1- to 7-step-ahead errors from a
+# shared origin, so correlation out to lag 6 is expected *even for a perfect
+# model*. A spike at lag 7 or beyond, or a mean far from zero, is what would
+# count against a method.
+#
+# The loop reads the model registry, so a model added in step 4 appears here
+# without editing the notebook.
 
 # %%
-for model in ("xgboost", "ets"):
+for model in MODELS:
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.2))
     plots.plot_residual_diagnostics(
         predictions, top_id, model, season=cfg.season, axes=axes
     )
-    fig.suptitle(f"{model} at {top_store} — residual diagnostics", y=1.04, fontsize=11)
-    fig.tight_layout()
-fig
+    fig.suptitle(f"{model} at {top_store} — residual diagnostics", fontsize=11)
+plots.show()
 
 # %% [markdown]
 # ## What this step should have established
@@ -282,7 +324,9 @@ fig
 # 1. **Which methods beat the benchmarks, and by how much** — RMSSE means and
 #    medians, and whether the models are separable from each other.
 # 2. **Whether the ranking depends on the store** — the by-store table and
-#    figure, read along the volume gradient.
+#    figure, read along the volume gradient — **and on the kind of week.** A
+#    method that wins the ordinary weeks and loses the holiday weeks is a
+#    different finding from one that wins both.
 # 3. **How error grows with horizon** — and whether the models' edge is at
 #    short lead times only.
 # 4. **Whether the residuals are clean** — zero mean, no leftover structure.

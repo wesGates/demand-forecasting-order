@@ -122,7 +122,12 @@ write-up. If it is, fix it; if RMSSE-by-store is the headline, note it.
   one-line switches on `Config`. Decided 2026-09-12.
 - **Price as a feature** — off, via `Config.use_price`. For the current item
   price takes three values in five years on the same two dates at every
-  store: a clock, not a variable. Decided 2026-09-11.
+  store: a clock, not a variable. Decided 2026-09-11. **Checked
+  2026-09-21** on the 52-fold layout, XGBoost only: price on gives mean
+  RMSSE 0.674 against 0.665 off (normal 0.661 vs 0.653, holiday 0.728 vs
+  0.717), bias +0.53 vs +0.89. A hair worse on accuracy, a little less
+  over-forecast, within noise either way - the flag stays off and the
+  report can quote the comparison.
 - **Availability screen** — measure and warn (`max_zero_run > 30`), do not
   silently trim. Decided 2026-09-10.
 - **One item across ten stores** — scope reduced from three items to one for

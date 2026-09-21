@@ -144,7 +144,7 @@ def bench_seasonal_naive(ctx: Context) -> np.ndarray:
     FPP §5.2. Captures the weekly pattern for free and is what a person with no
     tools would do.
 
-    Its weakness is the reason this project reports five benchmarks: it stakes
+    Its weakness is the reason this project reports six benchmarks: it stakes
     everything on one specific past day, so its error carries that day's noise
     *plus* the target's. On a noisy series that is roughly sqrt(2) worse than
     predicting the mean, and a model can beat it by being sensibly dull.

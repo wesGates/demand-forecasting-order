@@ -57,30 +57,46 @@ except NameError:
     pass  # not running under IPython
 
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from src import plots
 from src.step1_problem import STUDY_ITEMS, Config
-from src.step2_data import load_panel
-from src.step3_explore import class_table, classification_cutoff, series_stats, summarise
+from src.step2_data import MAJOR_EVENTS, load_panel
+from src.step3_explore import (
+    class_table,
+    classification_cutoff,
+    event_effects,
+    series_stats,
+    summarise,
+)
 
 plots.use_style()
 
 ITEM = STUDY_ITEMS[0]  # this notebook explores one item at a time
 
 # %% [markdown]
-# ### Optional — pop figures out into their own windows
+# ### Where figures appear
 #
-# By default plots appear inline in the Interactive Window, which is fine for
-# scrolling but poor for inspecting. Run the next cell and every figure from
-# then on opens in its **own resizable window** with a zoom / pan / save
-# toolbar — MATLAB figure windows, essentially.
-#
-# Swap `"tk"` for `"inline"` and re-run to go back. Changing it only affects
+# By default every figure opens in its **own resizable window** with a zoom /
+# pan / save toolbar — MATLAB figure windows, essentially — *and* an inline
+# copy is kept in the Interactive Window, so there is a scrollable record of
+# everything that was drawn. Set `FIGURE_BACKEND = "inline"` in the next cell
+# and re-run it to keep only the inline copies. Changing it only affects
 # figures created *after* the cell runs, so run it before the plotting cells.
 
 # %%
+# Where figures appear. "tk" pops every figure out into its own resizable
+# window (zoom, pan, hover labels) AND keeps an inline copy in the Interactive
+# Window, because each plotting cell ends with `plots.show()`. "inline" keeps
+# only the inline copy. Change it and re-run this cell; it only affects
+# figures made after it runs. On a machine with no display, "tk" falls back
+# to "inline" by itself.
+FIGURE_BACKEND = "tk"
 try:
-    get_ipython().run_line_magic("matplotlib", "tk")  # noqa: F821  ("inline" to revert)
+    try:
+        get_ipython().run_line_magic("matplotlib", FIGURE_BACKEND)  # noqa: F821
+    except Exception:
+        get_ipython().run_line_magic("matplotlib", "inline")  # noqa: F821
 except NameError:
     pass  # not running under IPython - leave the backend alone
 
@@ -100,11 +116,14 @@ except NameError:
 # **Volume ordering.** Wherever stores appear side by side they are ordered by
 # average daily sales, busiest first. So position carries information too.
 #
-# **Why some cells end with a bare `fig`.** The Interactive Window displays
-# whatever the last line of a cell evaluates to. A cell ending in
-# `fig.tight_layout()` evaluates to `None`, so that figure appears *only* in its
-# pop-out window; ending the cell with `fig` makes it render inline as well.
-# Every plotting cell below ends that way, so all figures appear in both places.
+# **Why every plotting cell ends with `plots.show()`.** It shows each figure
+# made in that cell exactly once: with the pop-out backend, a window *and* an
+# inline copy; with the inline backend, the inline copy alone. Do not end a
+# cell with a bare `fig` — the Interactive Window would display it a second
+# time.
+#
+# **Layout.** `plots.use_style()` switches on constrained layout, which makes
+# room for the legends placed below each axes. Do not add `tight_layout()`.
 
 # %% [markdown]
 # ## The problem definition
@@ -127,6 +146,14 @@ print(cfg.describe())
 # demand", and a missing price is the signal. **How much gets trimmed is itself
 # a finding** — a few percent means a long-established item; a fifth of the rows
 # means it launched well into the history.
+#
+# Two more things the loader does, both reported in the printout. Every store
+# records zero on Christmas Day because the stores were shut; that is a
+# missing observation, not demand, so the day is imputed with the same-weekday
+# mean of the surrounding weeks and flagged `closure` (FPP §13.7). And three
+# holiday-proximity columns are attached — `is_holiday`, `days_to_holiday`,
+# `days_since_holiday` — for the events that measurably move this item, which
+# the event-effect figure further down is the evidence for.
 
 # %%
 df = load_panel(cfg)
@@ -197,8 +224,7 @@ class_table(stats)
 # %%
 fig, ax = plt.subplots(figsize=(6.4, 4.6))
 plots.plot_demand_class_map(stats, highlight_item=ITEM, item_id=ITEM, ax=ax)
-fig.tight_layout()
-fig
+plots.show()
 
 # %% [markdown]
 # ## Is there a pattern? A trend? Outliers?
@@ -232,11 +258,13 @@ fig
 # - **Dead blocks** — flat zero for weeks. If you see any, the availability
 #   screen above should already have warned.
 # - **Which outliers sit at zero.** On a fast mover a zero-sales day is not
-#   demand; it is a stockout, a closed store, or a recording gap. The count is
-#   printed below the figure.
+#   demand; it is a stockout, a closed store, or a recording gap. Christmas
+#   closures were already imputed by the loader, so any zero that remains is
+#   one of the other two. The count is printed below the figure.
 
 # %%
-plots.plot_store_grid(df, ITEM, stats, holdout_start=cutoff, flag_outliers=True)
+_ = plots.plot_store_grid(df, ITEM, stats, holdout_start=cutoff, flag_outliers=True)
+plots.show()
 
 # %%
 # How many days the outlier rule flags, and how many of those are zeros.
@@ -264,9 +292,8 @@ print(
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(9.5, 2.9))
 plots.plot_seasonality(df, top_id, axes=axes)
-fig.suptitle(f"{ITEM} at {top_store}", y=1.05, fontsize=11)
-fig.tight_layout()
-fig
+fig.suptitle(f"{ITEM} at {top_store}", fontsize=11)
+plots.show()
 
 # %% [markdown]
 # ### The same shape, across every store
@@ -287,9 +314,8 @@ fig
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(9.5, 2.9))
 plots.plot_seasonality_by_store(df, ITEM, axes=axes)
-fig.suptitle(f"{ITEM} — seasonal shape across stores", y=1.05, fontsize=11)
-fig.tight_layout()
-fig
+fig.suptitle(f"{ITEM} — seasonal shape across stores", fontsize=11)
+plots.show()
 
 # %% [markdown]
 # ## Which lags actually carry signal? — autocorrelation
@@ -320,23 +346,40 @@ fig
 fig, axes = plt.subplots(1, 2, figsize=(11.5, 3.4))
 plots.plot_acf(df, top_id, ax=axes[0], title=f"{ITEM} at {top_store} — autocorrelation")
 plots.plot_year_overlay(df, top_id, ax=axes[1])
-fig.tight_layout()
-fig
+plots.show()
 
 # %% [markdown]
 # ## Relationships between variables
 #
-# Price, calendar events, and sparsity. Whether each one is worth a feature is
+# Price, sparsity, and calendar events. Whether each one is worth a feature is
 # an *item-specific* answer, so the numbers behind the plots are printed rather
 # than described.
 
 # %%
-fig, axes = plt.subplots(1, 3, figsize=(14, 3.4))
+fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.4))
 plots.plot_price_relationship(df, ITEM, ax=axes[0])
-plots.plot_event_effect(df, ITEM, ax=axes[1])
-plots.plot_zero_rate(stats, item_id=ITEM, ax=axes[2])
-fig.tight_layout()
-fig
+plots.plot_zero_rate(stats, item_id=ITEM, ax=axes[1])
+plots.show()
+
+# %% [markdown]
+# **Which calendar events move this item?** Measured, not assumed. Each event's
+# sales are divided by a same-weekday baseline from the surrounding weeks, on
+# the day and on the two days before it. The events that clear a 15% bar in
+# either direction are the ones `step2_data.MAJOR_EVENTS` names, and they drive
+# the holiday-proximity features and the normal/holiday split in step 5.
+# Christmas has no day marker — the stores were shut, so there is no demand
+# to measure — but its run-up is the largest in the calendar, which is why an
+# on/off holiday flag is not enough and the features carry *distance* to the
+# event.
+
+# %%
+calendar = pd.read_csv(cfg.data_dir / "calendar.csv", parse_dates=["date"])
+effects = event_effects(df, calendar)
+print(effects.round(2).to_string())
+
+fig, ax = plt.subplots(figsize=(7.5, 6.2))
+plots.plot_event_effects(effects, major=MAJOR_EVENTS, ax=ax)
+plots.show()
 
 # %% [markdown]
 # **Is price a real variable, or a clock?** Price is known in advance, so it is
@@ -363,13 +406,7 @@ print(
 )
 
 # %% [markdown]
-# **Calendar events** — holidays are the other calendar feature known years in
-# advance. The event plot shows each event type's mean as a percentage
-# difference from an ordinary day, with the sample count beside it. An effect
-# resting on a few dozen observations is a hint; one resting on several hundred
-# is a feature.
-#
-# **SNAP benefit days** are the most promising calendar feature in this dataset:
+# **SNAP benefit days** are the other calendar feature known years in advance:
 # the dates are fixed by state and known years ahead, so any effect here costs
 # nothing to obtain. The lift is printed below; a consistent few percent across
 # stores is usable signal.
@@ -377,8 +414,7 @@ print(
 # %%
 fig, ax = plt.subplots(figsize=(9, 3))
 plots.plot_snap_effect(df, ITEM, stats, ax=ax)
-fig.tight_layout()
-fig
+plots.show()
 
 # %%
 _m = _p.groupby("snap", observed=True)["sales"].mean()
@@ -397,8 +433,9 @@ print(
 #    zero-rate per store. Did the availability screen warn?
 # 2. **What is the dominant structure?** Weekly? Annual? Multi-year drift?
 #    Which lags did the autocorrelation justify?
-# 3. **Which known-in-advance variables carry signal?** SNAP lift, event
-#    effects by type, and whether price is a variable or a clock.
+# 3. **Which known-in-advance variables carry signal?** SNAP lift, which
+#    calendar events move the item (and by how much on the days before), and
+#    whether price is a variable or a clock.
 # 4. **Does the demand class vary across stores?** If yes, the study can ask
 #    "does the best model change with class." If every store is `smooth`, the
 #    question becomes "which model wins on this kind of item, and does pooling

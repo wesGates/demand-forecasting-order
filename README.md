@@ -49,7 +49,7 @@ two failures cannot recur:
   values in it, and training rows are filtered by *when their answer became
   observable*, not by when they were built. A date-comparison assertion refuses
   anything that reaches past the origin.
-- **Five benchmarks, not one.** Seasonal naïve stakes everything on one past
+- **Six benchmarks, not one.** Seasonal naïve stakes everything on one past
   day; on a noisy series its error is about √2 worse than predicting the mean.
 - **`python -m src.validate`** runs seven checks that each catch a different way
   of being *plausibly* wrong — closed-form benchmark answers, feature values
