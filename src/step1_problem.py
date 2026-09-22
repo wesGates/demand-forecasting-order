@@ -32,6 +32,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # which is the gradient the model comparison is run against.
 STUDY_ITEMS = ("FOODS_3_586",)
 
+# Three stores spanning the volume range, for iterating on a model change.
+# Twenty-four fits per method on the tiled layout: a point-model change runs
+# in about fifteen seconds, the quantile model in about a minute, ARIMA in
+# two. The ranking on these three tracks the ranking on all ten; a change
+# that survives here gets one full run, and the full run is what is
+# reported. Use as `Config(**DEV)` or `Config(**DEV, fold_step=1)`.
+DEV = dict(item_ids=STUDY_ITEMS, store_ids=("TX_2", "CA_4", "WI_2"), n_folds=8)
+
 # Columns a model is allowed to pool over. Anything else is a typo.
 POOL_SCOPES = (None, "item_id", "dept_id", "cat_id", "store_id", "state_id")
 

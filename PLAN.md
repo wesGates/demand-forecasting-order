@@ -77,10 +77,17 @@ it, once. Adding a config field at its default adopts old runs. Paths are
 not in the key, so the cache is portable; this folder's `cache/` was copied
 from the parent and holds the step-7 runs (52 and 104 folds).
 
-| layout | all methods | XGBoost only |
-|---|---|---|
-| step 7 (development) | ~20 min | ~4 min |
-| step 1 (reported) | ~1 h 45 min | ~30 min |
+| layout | all methods | XGBoost only | quantile XGBoost only |
+|---|---|---|---|
+| `Config(**DEV)`: 3 stores, 8 folds, step 7 | ~3 min | ~15 s | ~1 min |
+| step 7, 10 stores, 52 folds | ~20 min | ~4 min | ~25 min |
+| step 1, 10 stores, 358 folds | ~1 h 45 min | ~30 min | ~2.5 h |
+
+Idle-machine figures. Two heavy jobs at once roughly quadruple them, so
+run one at a time. Develop on `DEV`; run the full layout once per change
+that survives it; report from the step-1 layout. Edits to the harness
+(`step5_evaluate.py`) or the shared base invalidate every method's cache,
+so batch them.
 
 ## Rules
 
