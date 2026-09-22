@@ -4,7 +4,7 @@ A living list. Each entry says what was found, what the evidence is, what the
 options are, and what would settle it. Resolved items move to the bottom with
 the decision recorded, so the reasoning is not lost.
 
-Last updated: 2026-09-21.
+Last updated: 2026-09-22.
 
 ---
 
@@ -78,8 +78,9 @@ write-up. If it is, fix it; if RMSSE-by-store is the headline, note it.
   choice and would cost nothing on the current item.
 - **ARIMA.** ETS is the classical contender now; ARIMA (FPP Ch. 9) would be
   one registry entry if a second is wanted.
-- **The write-up.** A dated report under `findings/` for the current item,
-  then the final `.ipynb`.
+- **The write-up.** Drafted 2026-09-22: `findings/2026-09-22-FOODS_3_586.md`
+  (the numbers) and `report/report.md` (the explanation). Owner's edit pass
+  pending.
 
 ---
 

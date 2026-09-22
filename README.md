@@ -9,7 +9,9 @@ gradient-boosted model beat the simple methods a person would use without one �
 and does the answer depend on the store?
 
 **Status:** steps 1–5 built and validated on one item across ten stores.
-Write-up in progress. Results below are preliminary.
+The write-up is [`report/report.md`](report/report.md); the dated numbers
+behind it are in [`findings/`](findings/). Results below are the headline
+tables from that report.
 
 ---
 
@@ -117,7 +119,7 @@ python -m src.step5_evaluate    # the comparison, as tables
 python -m src.order             # from forecast to order quantity (two-year run)
 ```
 
-## Preliminary result
+## Results
 
 One item (`FOODS_3_586`), ten stores, 52 walk-forward folds of 7 days — one
 full year, 25 May 2015 to 22 May 2016 — RMSSE scaled by the seasonal-naïve
