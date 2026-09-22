@@ -35,7 +35,7 @@ California stores and on ordinary weeks. XGBoost also carries a systematic
 over-forecast at the busy stores that the error score does not show and the
 bias column does.
 
-Everything quoted here passed an eight-check validator and an 82-test suite
+Everything quoted here passed a seven-check validator and the test suite
 before it was written down.
 
 ## 2. Background and Problem
@@ -287,16 +287,15 @@ with weekday.
 
 ## 8. Testing
 
-The validator (`python -m src.validate`) runs eight checks: closed-form
+The validator (`python -m src.validate`) runs seven checks: closed-form
 benchmark answers on series whose correct forecast is known; every feature
 recomputed from the raw panel by date filtering and compared to the
 array-sliced implementation; per-state SNAP flags against the raw calendar;
-the holiday-proximity counts and closure flags recounted by hand; the
-quantile arithmetic used by the follow-on work; a synthetic noise floor no
-honest model can beat; a shuffled target no model should learn from; and a
-byte-identical rerun.
+the holiday-proximity counts and closure flags recounted by hand; a
+synthetic noise floor no honest model can beat; a shuffled target no model
+should learn from; and a byte-identical rerun.
 
-The test suite (`python -m pytest tests`) has 82 tests. It was written by an
+The test suite (`python -m pytest tests`) was written by an
 independent reviewer against the finished code and found four defects, all
 fixed: the leakage assertion was defined but never called; the
 feature-matrix cache key did not include the loader version; the by-store
@@ -315,8 +314,8 @@ against the current panel.
 - A point forecast is not an order. Ordering the forecast under-covers the
   week's demand about half the time, and the right order is a quantile at a
   service level set by the cost of running out against the cost of holding.
-  A prototype of that step exists in this repository (`order.py`, notebook
-  `03_order`) and is the subject of the follow-on work.
+  That step is the subject of the follow-on repository,
+  `demand-forecasting-order`.
 
 Next, in order: train XGBoost directly on the quantile objective at a chosen
 service level and compare it with ARIMA and ETS given the same treatment;
@@ -327,7 +326,7 @@ across stores; and repeat the study on an intermittent item.
 
 ```
 python -m src.validate          # eight checks; must pass before any number is quoted
-python -m pytest tests          # 82 tests
+python -m pytest tests
 python -m src.step5_evaluate    # the tables in section 6
 python -m src.render_figures    # every figure, one folder per notebook
 ```

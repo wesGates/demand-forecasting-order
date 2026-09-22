@@ -3,7 +3,7 @@ The validator. Run it before trusting any number this project produces.
 
     python -m src.validate
 
-Eight checks in seven groups, each aimed at a different way of being wrong. What
+Seven checks in six groups, each aimed at a different way of being wrong. What
 they have in common is the only thing that matters: **every bug they catch
 still produces plausible-looking output.** A result that is obviously broken
 gets fixed the moment you see it; a result that is quietly wrong ends up in a
@@ -35,9 +35,6 @@ report.
 
   6. Holiday calendar - are the proximity counts and closure flags right?
      Recounted by hand from the raw calendar for every date in the panel.
-
-  7. Quantile scoring - does the order-quantity arithmetic do what it says?
-     Pinball closed form, and coverage on errors of known distribution.
 """
 
 from __future__ import annotations
@@ -544,96 +541,6 @@ def check_holiday_calendar(cfg: Config | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 7. Quantile scoring
-# --------------------------------------------------------------------------- #
-
-
-def check_quantile_scoring(seed: int = 3) -> dict:
-    """
-    The order-quantity arithmetic, on inputs whose right answer is known.
-
-    Pinball at tau = 0.5 must equal the absolute error (FPP's factor of two is
-    what makes that true), and it must reward a correct quantile: on errors
-    drawn from a known distribution, calibrating on one sample and scoring on
-    another must give coverage within a few points of tau, and a deliberately
-    shifted quantile must score worse.
-    """
-    from src.order import (
-        calibrate,
-        pinball,
-        quantile_forecasts,
-        score_quantiles,
-        weekly_totals,
-    )
-
-    failures = []
-    rng = np.random.default_rng(seed)
-
-    # --- pinball closed form ------------------------------------------------
-    y, q = rng.normal(0, 10, 500), rng.normal(0, 10, 500)
-    if not np.allclose(pinball(y, q, 0.5), np.abs(y - q), atol=TOL):
-        failures.append("pinball at tau=0.5 is not the absolute error")
-    if not np.allclose(pinball([10.0], [0.0], 0.9), [18.0]) or not np.allclose(
-        pinball([0.0], [10.0], 0.9), [2.0]
-    ):
-        failures.append(
-            "pinball asymmetry wrong: shortfall of 10 at tau=0.9 should cost 18, surplus 2"
-        )
-
-    # --- calibration transfers between independent samples ------------------
-    # Two years of weekly errors from one N(0, 30) distribution, as a fake
-    # predictions table: one series, one method, seven identical days a week.
-    n_weeks, horizon = 300, 7
-    origins = pd.date_range("2013-01-06", periods=n_weeks, freq="7D")
-    rows = []
-    for k, origin in enumerate(origins):
-        err = rng.normal(0, 30)
-        for h in range(1, horizon + 1):
-            rows.append(
-                {
-                    "id": "S",
-                    "item_id": "I",
-                    "store_id": "S",
-                    "fold": k,
-                    "origin": origin,
-                    "week_kind": "normal",
-                    "method": "m",
-                    "kind": "model",
-                    "horizon": h,
-                    "target_date": origin + pd.Timedelta(days=h),
-                    "actual": 100.0 + err / horizon,
-                    "forecast": 100.0,
-                    "scale": 1.0,
-                    "closure": False,
-                    "holiday_window": False,
-                }
-            )
-    weekly = weekly_totals(pd.DataFrame(rows))
-    scored_from = origins[n_weeks // 2]
-    offsets = calibrate(weekly, scored_from, taus=(0.3, 0.5, 0.9))
-    scored = score_quantiles(quantile_forecasts(weekly, offsets, scored_from))
-    coverage = scored.groupby("tau")["covered"].mean()
-    for tau, got in coverage.items():
-        if abs(got - tau) > 0.08:
-            failures.append(f"coverage at tau={tau}: {got:.2f}, expected within 0.08")
-    # A shifted quantile must score worse than the calibrated one.
-    s9 = scored[scored["tau"] == 0.9]
-    shifted = pinball(s9["actual"], s9["q"] + 30, 0.9).mean()
-    if not shifted > s9["pinball"].mean():
-        failures.append(
-            "an over-shifted 0.9 quantile did not score worse than the calibrated one"
-        )
-
-    return {
-        "check": "quantile scoring",
-        "tested": f"pinball closed form on 500 pairs; coverage on {n_weeks // 2} held-out weeks",
-        "coverage": {float(t): round(float(c), 3) for t, c in coverage.items()},
-        "failures": failures,
-        "verdict": "ok" if not failures else "FAILED",
-    }
-
-
-# --------------------------------------------------------------------------- #
 
 
 def run_all() -> bool:
@@ -643,7 +550,6 @@ def run_all() -> bool:
         check_features_hand_computed,
         check_snap_flags,
         check_holiday_calendar,
-        check_quantile_scoring,
         check_determinism,
         check_noise_floor,
         check_shuffled_target,

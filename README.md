@@ -56,13 +56,12 @@ two failures cannot recur:
   anything that reaches past the origin.
 - **Six benchmarks, not one.** Seasonal naïve stakes everything on one past
   day; on a noisy series its error is about √2 worse than predicting the mean.
-- **`python -m src.validate`** runs eight checks that each catch a different way
+- **`python -m src.validate`** runs seven checks that each catch a different way
   of being *plausibly* wrong — closed-form benchmark answers, feature values
   recomputed by a second route, per-state SNAP flags against the raw calendar,
-  holiday-proximity counts and closure flags recounted from the calendar, the
-  quantile scoring on errors of known distribution, a synthetic noise floor no
-  honest model can beat, a shuffled target no model should learn from, and
-  byte-identical reruns.
+  holiday-proximity counts and closure flags recounted from the calendar, a
+  synthetic noise floor no honest model can beat, a shuffled target no model
+  should learn from, and byte-identical reruns.
 
 ## When a run is recomputed, and when it is not
 
@@ -96,7 +95,6 @@ src/
   step4_models.py     the registry: six benchmarks + XGBoost + ETS + ARIMA
   models/             one module per forecaster (cache invalidation is per module)
   step5_evaluate.py   walk-forward harness, RMSSE, normal/holiday split, tables
-  order.py            weekly totals, calibrated quantile forecasts, pinball loss
   plots.py            every figure, on one palette
   validate.py         the gate
   render_figures.py   regenerate all figures to figures/<notebook>/
@@ -104,7 +102,6 @@ tests/                pytest suite: benchmarks, features, harness, models, order
 notebooks/
   01_explore.py       FPP step 3 — graph the data before modelling anything
   02_evaluate.py      FPP step 5 — run the comparison, read the diagnostics
-  03_order.py         FPP step 5, continued — from forecast to order quantity
 findings/             what the notebooks found for a particular item, dated
 report/               the write-up, with its own copies of the figures
 ```
@@ -134,10 +131,9 @@ Then:
 
 ```
 python -m src.validate          # must pass before any number is quoted
-python -m pytest tests          # 82 tests pinning documented behaviour
+python -m pytest tests          # tests pinning documented behaviour
 python -m src.render_figures    # all figures -> figures/<notebook>/
 python -m src.step5_evaluate    # the comparison, as tables
-python -m src.order             # prototype: forecast -> order quantity (follow-on work)
 ```
 
 ## Results
@@ -191,10 +187,10 @@ in a quarter of weeks it does no better than the default screen. It also
 over-forecasts by about 4% at the busiest store, which the bias column shows
 and the error score does not.
 
-A point forecast is not an order. A prototype of the next step, turning the
-forecast into a quantile order at a service level and scoring it with the
-quantile score, is in `src/order.py` and notebook `03_order`; it is the
-subject of the follow-on work and is not part of this report.
+A point forecast is not an order. Turning the forecast into a quantile order
+at a service level, and training XGBoost on that objective, is the subject
+of the follow-on repository,
+[demand-forecasting-order](https://github.com/wesGates/demand-forecasting-order).
 
 ## What is deliberately not claimed
 

@@ -32,7 +32,7 @@ from src.step3_explore import (  # noqa: E402
 from src.step4_models import MODELS  # noqa: E402
 
 OUT = PROJECT_ROOT / "figures"
-EXPLORE, EVALUATE, ORDER = OUT / "01_explore", OUT / "02_evaluate", OUT / "03_order"
+EXPLORE, EVALUATE = OUT / "01_explore", OUT / "02_evaluate"
 
 
 def render_all(cfg: Config | None = None) -> list[str]:
@@ -177,61 +177,10 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
     return written
 
 
-def render_order(cfg: Config | None = None) -> list[str]:
-    """
-    The order-quantity figures (FPP §5.5, §5.9). Needs the two-year run: the
-    first year calibrates each method's error quantiles, the second is judged.
-    """
-    from src.order import (
-        calibrate,
-        quantile_forecasts,
-        score_quantiles,
-        summarise_quantiles,
-        weekly_totals,
-    )
-    from src.step5_evaluate import run_walk_forward
-
-    cfg = cfg or Config(item_ids=STUDY_ITEMS)
-    both = Config(**{**cfg.__dict__, "n_folds": 2 * cfg.n_folds})
-    ORDER.mkdir(parents=True, exist_ok=True)
-    plots.use_style()
-
-    df = load_panel(both, verbose=False)
-    stats = series_stats(df, cfg)
-    top_id = stats.iloc[0]["id"]
-    scored_from = cfg.holdout_start(df["date"].max()) - pd.Timedelta(days=1)
-
-    weekly = weekly_totals(run_walk_forward(df, both, progress=False))
-    scored = score_quantiles(
-        quantile_forecasts(weekly, calibrate(weekly, scored_from), scored_from)
-    )
-    summary = summarise_quantiles(scored)
-    written: list[str] = []
-
-    def save(fig: plt.Figure, name: str) -> None:
-        fig.savefig(ORDER / name, bbox_inches="tight")
-        plt.close(fig)
-        written.append(f"{ORDER.name}/{name}")
-
-    # 1. does the ranking change with the cost asymmetry?
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 3.8))
-    plots.plot_pinball_by_tau(summary, ax=axes[0])
-    plots.plot_coverage_by_tau(summary, ax=axes[1])
-    plots.merge_legends(fig)
-    save(fig, "1_pinball_and_coverage.png")
-
-    # 2. what the order would have been, week by week, at the busiest store
-    fig, ax = plt.subplots(figsize=(12.5, 3.8))
-    plots.plot_weekly_order_band(scored, top_id, "arima", ax=ax)
-    save(fig, "2_weekly_order_band.png")
-
-    return written
-
-
 if __name__ == "__main__":
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # matplotlib font chatter
-        names = render_all() + render_evaluation() + render_order()
+        names = render_all() + render_evaluation()
     print(f"wrote {len(names)} figures to {OUT}")
     for n in names:
         print("  ", n)

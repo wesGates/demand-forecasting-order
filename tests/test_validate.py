@@ -15,12 +15,12 @@ from src import validate
 from src.step1_problem import Config
 
 
-def test_run_all_lists_eight_checks():
+def test_run_all_lists_seven_checks():
     import inspect
 
     src = inspect.getsource(validate.run_all)
     names = [n for n in dir(validate) if n.startswith("check_")]
-    assert len(names) == 8
+    assert len(names) == 7
     for name in names:
         assert name in src
 
@@ -28,13 +28,6 @@ def test_run_all_lists_eight_checks():
 def test_closed_form_benchmarks_pass():
     result = validate.check_benchmarks_closed_form()
     assert result["verdict"] == "ok", result["failures"]
-
-
-def test_quantile_scoring_passes():
-    result = validate.check_quantile_scoring()
-    assert result["verdict"] == "ok", result["failures"]
-    for tau, coverage in result["coverage"].items():
-        assert abs(coverage - tau) <= 0.08
 
 
 def test_synthetic_panel_has_the_documented_structure():

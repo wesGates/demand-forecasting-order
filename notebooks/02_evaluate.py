@@ -335,4 +335,5 @@ plots.show()
 # 5. **Where the models lose** — named, not hidden. The stores or folds where
 #    a benchmark wins are the honest edge of what the method can do.
 #
-# The forecast is not yet an order. `03_order` takes it the rest of the way.
+# The forecast is not yet an order. The follow-on repository,
+# `demand-forecasting-order`, takes it the rest of the way.
