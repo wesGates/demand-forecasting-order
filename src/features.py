@@ -92,7 +92,22 @@ def calendar_features(rows: pd.DataFrame, use_price: bool = False) -> pd.DataFra
 # --------------------------------------------------------------------------- #
 
 
-def history_features(history: pd.DataFrame, target_dates: pd.Series) -> pd.DataFrame:
+# The holiday-affected window, in days before and after a major event. Shared
+# with step 5's normal/holiday fold split so "holiday-affected" means one
+# thing everywhere.
+HOLIDAY_WINDOW_BEFORE, HOLIDAY_WINDOW_AFTER = 2, 1
+
+
+def holiday_window(frame: pd.DataFrame) -> pd.Series:
+    """True for rows inside the holiday-affected window around a major event."""
+    return (frame["days_to_holiday"] <= HOLIDAY_WINDOW_BEFORE) | (
+        frame["days_since_holiday"] <= HOLIDAY_WINDOW_AFTER
+    )
+
+
+def history_features(
+    history: pd.DataFrame, target_dates: pd.Series, mask_holidays: bool = False
+) -> pd.DataFrame:
     """
     Summaries of one series' sales, all ending at the forecast origin.
 
@@ -105,6 +120,11 @@ def history_features(history: pd.DataFrame, target_dates: pd.Series) -> pd.DataF
     target_dates
         The days being forecast. Used only for the same-weekday features, which
         depend on which weekday is being predicted.
+    mask_holidays
+        If True, the rolling and same-weekday summaries skip days inside the
+        holiday window, so a spike does not carry into the following week's
+        level. The lags are left alone - each names one specific day, and the
+        model has the flags to know what kind of day it was.
 
     Returns
     -------
@@ -115,14 +135,24 @@ def history_features(history: pd.DataFrame, target_dates: pd.Series) -> pd.DataF
     sales = history["sales"].to_numpy(dtype=float)
     n = len(sales)
     out = pd.DataFrame(index=target_dates.index)
+    # Days the summaries may use. Everything, unless masking is on.
+    keep = np.ones(n, dtype=bool)
+    if mask_holidays and n:
+        keep = ~holiday_window(history).to_numpy(dtype=bool)
 
     # Lags counted back from the origin: lag_1 is the origin day itself.
     for k in LAGS:
         out[f"lag_{k}"] = sales[-k] if n >= k else np.nan
 
-    # Level and volatility over windows ending at the origin.
+    # Level and volatility over windows ending at the origin. A masked window
+    # is the same w calendar days with the flagged ones dropped - so a window
+    # that is entirely holiday falls back to the unmasked days rather than to
+    # nothing.
     for w in ROLL_WINDOWS:
         window = sales[-w:] if n >= 1 else np.array([])
+        if mask_holidays and len(window):
+            kept = window[keep[-w:]]
+            window = kept if len(kept) else window
         out[f"roll_mean_{w}"] = window.mean() if len(window) else np.nan
         out[f"roll_std_{w}"] = window.std(ddof=1) if len(window) > 1 else np.nan
 
@@ -134,10 +164,12 @@ def history_features(history: pd.DataFrame, target_dates: pd.Series) -> pd.DataF
     hist_dow = history["date"].dt.dayofweek.to_numpy()
     target_dow = target_dates.dt.dayofweek.to_numpy()
     for k in DOW_WINDOWS:
-        values = [
-            sales[hist_dow == d][-k:].mean() if (hist_dow == d).sum() else np.nan
-            for d in target_dow
-        ]
+        values = []
+        for d in target_dow:
+            same = (hist_dow == d) & keep
+            if not same.any():
+                same = hist_dow == d
+            values.append(sales[same][-k:].mean() if same.any() else np.nan)
         out[f"dow_mean_{k}"] = values
 
     return out
@@ -148,6 +180,7 @@ def build_fold_features(
     targets: pd.DataFrame,
     origin: pd.Timestamp,
     use_price: bool = False,
+    mask_holidays: bool = False,
 ) -> pd.DataFrame:
     """
     Assemble the feature matrix for one fold of one series.
@@ -165,7 +198,7 @@ def build_fold_features(
     feats = pd.concat(
         [
             calendar_features(targets, use_price=use_price),
-            history_features(history, targets["date"]),
+            history_features(history, targets["date"], mask_holidays=mask_holidays),
         ],
         axis=1,
     )
@@ -226,7 +259,10 @@ FEATURE_VERSION = 2  # v2: holiday proximity (is_holiday, days_to/since_holiday)
 
 
 def build_supervised(
-    series: pd.DataFrame, horizon: int, use_price: bool = False
+    series: pd.DataFrame,
+    horizon: int,
+    use_price: bool = False,
+    mask_holidays: bool = False,
 ) -> pd.DataFrame:
     """
     Every (origin, horizon) pair for one series, as a supervised learning table.
@@ -253,7 +289,11 @@ def build_supervised(
         targets = series.iloc[i + 1 : i + 1 + horizon]
 
         feats = build_fold_features(
-            series.iloc[: i + 1], targets, origin, use_price=use_price
+            series.iloc[: i + 1],
+            targets,
+            origin,
+            use_price=use_price,
+            mask_holidays=mask_holidays,
         )
         feats["origin_date"] = origin
         feats["target_date"] = targets["date"].to_numpy()

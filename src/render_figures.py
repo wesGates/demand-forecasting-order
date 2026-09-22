@@ -1,15 +1,13 @@
 """
-Render every step-3 figure to `figures/` as PNG, for review outside a notebook.
+Render every figure to `figures/<notebook>/` as PNG, for review outside a
+notebook.
 
     python -m src.render_figures
 
-The notebook is where the figures are *read*; this is where they are
+The notebooks are where the figures are *read*; this is where they are
 *regenerated* on demand - after a change to `plots.py`, or to look at them all
-side by side. `figures/` is gitignored: the report embeds its own copies.
-
-The last figure is on synthetic data whose pattern is known by construction,
-so the plotting tools have a right answer to be checked against - the ACF of a
-pure weekly sine is a cosine, and that is what should appear.
+side by side. One folder per notebook, numbered in the order the notebook
+draws them. `figures/` is gitignored: the report embeds its own copies.
 """
 
 from __future__ import annotations
@@ -32,15 +30,15 @@ from src.step3_explore import (  # noqa: E402
     series_stats,
 )
 from src.step4_models import MODELS  # noqa: E402
-from src.validate import _synthetic_panel  # noqa: E402
 
 OUT = PROJECT_ROOT / "figures"
+EXPLORE, EVALUATE, ORDER = OUT / "01_explore", OUT / "02_evaluate", OUT / "03_order"
 
 
 def render_all(cfg: Config | None = None) -> list[str]:
     """Render the full set. Returns the filenames written."""
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
-    OUT.mkdir(exist_ok=True)
+    EXPLORE.mkdir(parents=True, exist_ok=True)
     plots.use_style()
 
     item = cfg.item_ids[0]
@@ -51,9 +49,9 @@ def render_all(cfg: Config | None = None) -> list[str]:
     written: list[str] = []
 
     def save(fig: plt.Figure, name: str) -> None:
-        fig.savefig(OUT / name, bbox_inches="tight")
+        fig.savefig(EXPLORE / name, bbox_inches="tight")
         plt.close(fig)
-        written.append(name)
+        written.append(f"{EXPLORE.name}/{name}")
 
     # 1. every store, with the held-out window marked and outliers flagged
     save(
@@ -96,27 +94,12 @@ def render_all(cfg: Config | None = None) -> list[str]:
     calendar = pd.read_csv(cfg.data_dir / "calendar.csv", parse_dates=["date"])
     fig, ax = plt.subplots(figsize=(7.5, 6.2))
     plots.plot_event_effects(event_effects(df, calendar), major=MAJOR_EVENTS, ax=ax)
-    save(fig, "5b_event_effects.png")
+    save(fig, "6_event_effects.png")
 
     # 6. SNAP benefit days
     fig, ax = plt.subplots(figsize=(9, 3))
     plots.plot_snap_effect(df, item, stats, ax=ax)
-    save(fig, "6_snap.png")
-
-    # 7. synthetic - the tools checked against a known answer
-    syn = _synthetic_panel(n_series=3)
-    sid = syn["id"].iloc[0]
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 3.4))
-    plots.plot_series(
-        syn,
-        sid,
-        ax=axes[0],
-        title="synthetic: level + weekly sine + slow trend + N(0, 2)",
-    )
-    plots.plot_acf(
-        syn, sid, ax=axes[1], title="synthetic ACF — a pure weekly sine gives a cosine"
-    )
-    save(fig, "7_synthetic.png")
+    save(fig, "7_snap.png")
 
     return written
 
@@ -129,7 +112,7 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
     from src.step5_evaluate import run_walk_forward, score_folds
 
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
-    OUT.mkdir(exist_ok=True)
+    EVALUATE.mkdir(parents=True, exist_ok=True)
     plots.use_style()
 
     item = cfg.item_ids[0]
@@ -144,35 +127,86 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
     written: list[str] = []
 
     def save(fig: plt.Figure, name: str) -> None:
-        fig.savefig(OUT / name, bbox_inches="tight")
+        fig.savefig(EVALUATE / name, bbox_inches="tight")
         plt.close(fig)
-        written.append(name)
+        written.append(f"{EVALUATE.name}/{name}")
 
-    # 8. forecasts against actuals, busiest store (FPP §5.8)
+    # 1. forecasts against actuals, busiest store (FPP §5.8)
     fig, ax = plt.subplots(figsize=(12.5, 3.6))
     plots.plot_forecast_folds(
         predictions, df, top_id, holdout_start=cutoff, origins=origins, ax=ax
     )
-    save(fig, "8_forecasts_busiest_store.png")
+    save(fig, "1_forecasts_busiest_store.png")
 
-    # 9. error by horizon (FPP §5.10)
+    # 2. error by horizon (FPP §5.10)
     fig, ax = plt.subplots(figsize=(7, 3.4))
     plots.plot_rmsse_by_horizon(predictions, ax=ax)
-    save(fig, "9_rmsse_by_horizon.png")
+    save(fig, "2_rmsse_by_horizon.png")
 
-    # 10. residual diagnostics for each model at the busiest store (FPP §5.4)
+    # 3. residual diagnostics for each model at the busiest store (FPP §5.4)
     for model in MODELS:
         fig, axes = plt.subplots(1, 3, figsize=(13, 3.2))
         plots.plot_residual_diagnostics(
             predictions, top_id, model, season=cfg.season, axes=axes
         )
         fig.suptitle(f"{model} at {top_store} — residual diagnostics", fontsize=11)
-        save(fig, f"10_residuals_{model}.png")
+        save(fig, f"3_residuals_{model}.png")
 
-    # 11. RMSSE by store - the study's own view
+    # 4. RMSSE by store - the study's own view
     fig, ax = plt.subplots(figsize=(10, 3.8))
     plots.plot_rmsse_by_store(scores, stats, item_id=item, ax=ax)
-    save(fig, "11_rmsse_by_store.png")
+    save(fig, "4_rmsse_by_store.png")
+
+    return written
+
+
+def render_order(cfg: Config | None = None) -> list[str]:
+    """
+    The order-quantity figures (FPP §5.5, §5.9). Needs the two-year run: the
+    first year calibrates each method's error quantiles, the second is judged.
+    """
+    from src.order import (
+        calibrate,
+        quantile_forecasts,
+        score_quantiles,
+        summarise_quantiles,
+        weekly_totals,
+    )
+    from src.step5_evaluate import run_walk_forward
+
+    cfg = cfg or Config(item_ids=STUDY_ITEMS)
+    both = Config(**{**cfg.__dict__, "n_folds": 2 * cfg.n_folds})
+    ORDER.mkdir(parents=True, exist_ok=True)
+    plots.use_style()
+
+    df = load_panel(both, verbose=False)
+    stats = series_stats(df, cfg)
+    top_id = stats.iloc[0]["id"]
+    scored_from = cfg.holdout_start(df["date"].max()) - pd.Timedelta(days=1)
+
+    weekly = weekly_totals(run_walk_forward(df, both, progress=False))
+    scored = score_quantiles(
+        quantile_forecasts(weekly, calibrate(weekly, scored_from), scored_from)
+    )
+    summary = summarise_quantiles(scored)
+    written: list[str] = []
+
+    def save(fig: plt.Figure, name: str) -> None:
+        fig.savefig(ORDER / name, bbox_inches="tight")
+        plt.close(fig)
+        written.append(f"{ORDER.name}/{name}")
+
+    # 1. does the ranking change with the cost asymmetry?
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 3.8))
+    plots.plot_pinball_by_tau(summary, ax=axes[0])
+    plots.plot_coverage_by_tau(summary, ax=axes[1])
+    plots.merge_legends(fig)
+    save(fig, "1_pinball_and_coverage.png")
+
+    # 2. what the order would have been, week by week, at the busiest store
+    fig, ax = plt.subplots(figsize=(12.5, 3.8))
+    plots.plot_weekly_order_band(scored, top_id, "arima", ax=ax)
+    save(fig, "2_weekly_order_band.png")
 
     return written
 
@@ -180,7 +214,7 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
 if __name__ == "__main__":
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # matplotlib font chatter
-        names = render_all() + render_evaluation()
+        names = render_all() + render_evaluation() + render_order()
     print(f"wrote {len(names)} figures to {OUT}")
     for n in names:
         print("  ", n)

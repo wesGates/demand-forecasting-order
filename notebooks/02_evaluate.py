@@ -335,4 +335,4 @@ plots.show()
 # 5. **Where the models lose** — named, not hidden. The stores or folds where
 #    a benchmark wins are the honest edge of what the method can do.
 #
-# Only now is it reasonable to write anything up.
+# The forecast is not yet an order. `03_order` takes it the rest of the way.

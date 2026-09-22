@@ -63,7 +63,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.features import FEATURE_VERSION, build_supervised
+from src.features import FEATURE_VERSION, build_supervised, holiday_window
 from src.step1_problem import Config
 from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context
 
@@ -73,7 +73,9 @@ from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context
 
 
 def _supervised_path(cfg: Config, series_id: str):
-    key = repr((FEATURE_VERSION, series_id, cfg.horizon, cfg.use_price))
+    key = repr(
+        (FEATURE_VERSION, series_id, cfg.horizon, cfg.use_price, cfg.mask_holidays)
+    )
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
     return cfg.cache_dir / f"supervised_v{FEATURE_VERSION}_{digest}.parquet"
 
@@ -93,7 +95,12 @@ def supervised_matrices(df: pd.DataFrame, cfg: Config) -> dict[str, pd.DataFrame
         if path.exists():
             out[series_id] = pd.read_parquet(path)
         else:
-            matrix = build_supervised(series, cfg.horizon, use_price=cfg.use_price)
+            matrix = build_supervised(
+                series,
+                cfg.horizon,
+                use_price=cfg.use_price,
+                mask_holidays=cfg.mask_holidays,
+            )
             matrix.to_parquet(path, index=False)
             out[series_id] = matrix
     return out
@@ -124,17 +131,10 @@ def naive_scale(y, lag: int) -> float:
 # Holiday weeks
 # --------------------------------------------------------------------------- #
 
-# Days before and after a major event that count as "holiday-affected". From
-# the event-effect table (step 3): the two days before Christmas and
+# The holiday-affected window is defined once, in features.py, and shared: the
+# feature masking and the normal/holiday fold split must mean the same days.
+# From the event-effect table (step 3): the two days before Christmas and
 # Thanksgiving run 20-70% above baseline, and the day after is still elevated.
-HOLIDAY_WINDOW_BEFORE, HOLIDAY_WINDOW_AFTER = 2, 1
-
-
-def holiday_window(frame: pd.DataFrame) -> pd.Series:
-    """True for rows inside the holiday-affected window around a major event."""
-    return (frame["days_to_holiday"] <= HOLIDAY_WINDOW_BEFORE) | (
-        frame["days_since_holiday"] <= HOLIDAY_WINDOW_AFTER
-    )
 
 
 # --------------------------------------------------------------------------- #

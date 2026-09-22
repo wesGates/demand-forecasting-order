@@ -87,6 +87,29 @@ write-up. If it is, fix it; if RMSSE-by-store is the headline, note it.
 
 *(decisions recorded here as they are made)*
 
+- **Holiday-masked rolling features: off.** The concern was carry-over - a
+  7-day mean on 11 July still contains 4 July. `Config.mask_holidays` makes
+  the rolling and same-weekday summaries skip the holiday window. Measured
+  on XGBoost over the 52 folds: mask on gives mean RMSSE 0.673 against 0.665
+  off (normal 0.659 vs 0.653, holiday 0.733 vs 0.717), bias +0.82 vs +0.89.
+  Slightly worse everywhere: the model already has `days_since_holiday` to
+  attribute the spike, and masking removes level information it was using.
+  The flag stays, off, as the record of the question. Decided 2026-09-21.
+
+- **Order quantity from calibrated quantiles, scored with pinball loss.**
+  Weekly totals, not daily points; each method's τ-quantile forecast is its
+  point forecast plus the τ-quantile of its own weekly errors over a
+  calibration year (the 52 folds before the scored year, so every holiday is
+  in both). Coverage is judged on the scored year only. τ reported as a
+  range (0.3, 0.5, 0.7, 0.9) because the item's economics are unknown. Also
+  an expanding-window variant, what a live system would do. `src/order.py`,
+  validator check 7. Decided 2026-09-21.
+- **Two-year run for the quantile section.** The 104-fold run reproduces the
+  52-fold scored year exactly for every method except ARIMA, whose order is
+  selected on the first training window it sees (May 2014 rather than May
+  2015). The point-forecast tables use the 52-fold run; the quantile tables
+  use the 104-fold run and say so. Decided 2026-09-21.
+
 - **Fold count: 52.** FPP prescribes none (§5.10's example uses every
   origin); the only sizing text is §5.8's "about 20% of the sample, at least
   as long as the horizon". One year of weekly folds is ~20% of the history

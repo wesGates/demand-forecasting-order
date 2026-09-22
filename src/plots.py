@@ -144,6 +144,18 @@ def show() -> None:
         plt.show(block=False)
 
 
+def merge_legends(fig: plt.Figure, ncols: int | None = None):
+    """
+    Replace the per-axes legends of a multi-panel figure with one figure
+    legend below all panels, one entry per distinct label. For panels that
+    share their series, two legends side by side would collide.
+    """
+    for ax in fig.axes:
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+    return legend_below(fig, ncols=ncols)
+
+
 def legend_below(target, ncols: int | None = None, handles=None, labels=None):
     """
     Place the one legend for an Axes or a Figure below the plotting area.
@@ -771,9 +783,35 @@ def plot_price_relationship(
     ax.scatter(
         wk["price"], wk["sales"], s=14, color=SERIES_1, alpha=0.35, edgecolors="none"
     )
+    # When every point stacks into a few columns, the columns *are* the
+    # finding: label each with the dates that price was in force, so the
+    # reader sees a clock rather than a relationship.
+    spans = (
+        g.dropna(subset=["sell_price"])
+        .groupby("sell_price", observed=True)["date"]
+        .agg(["min", "max"])
+    )
+    top = wk["sales"].max()
+    if len(spans) <= 6:
+        for price, row in spans.iterrows():
+            ax.annotate(
+                f"{row['min']:%b %Y}\nto {row['max']:%b %Y}",
+                (price, top),
+                textcoords="offset points",
+                xytext=(0, 6),
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color=INK_SOFT,
+            )
+        ax.set_ylim(0, top * 1.3)
+        ax.margins(x=0.15)
     ax.set_xlabel("shelf price ($)")
     ax.set_ylabel("mean units/day that week")
-    ax.set_title(f"{item_id} — sales vs price (store-weeks)")
+    n_prices = wk["price"].nunique()
+    ax.set_title(
+        f"{item_id} — sales vs shelf price: {n_prices} prices in the whole history"
+    )
     return ax
 
 
@@ -863,7 +901,8 @@ def plot_zero_rate(
     s = stats.sort_values("mean_sales", ascending=False)
     ax.bar(range(len(s)), s["zero_rate"] * 100, color=SERIES_1, width=0.68)
     ax.set_xticks(range(len(s)), s["store_id"])
-    ax.set_ylabel("% of days with no sale")
+    ax.set_ylabel("days with no sale")
+    ax.yaxis.set_major_formatter(lambda v, _pos: f"{v:.1f}%")
     ax.set_title("Zero-sales rate across the working set")
     ax.grid(axis="x", visible=False)
     return ax
@@ -1191,3 +1230,155 @@ def plot_residual_diagnostics(
     axes[2].set_xlabel("forecast − actual")
     axes[2].grid(axis="x", visible=False)
     return axes
+
+
+# --------------------------------------------------------------------------- #
+# From forecast to order: quantile forecasts (FPP §5.5, §5.9)
+# --------------------------------------------------------------------------- #
+
+
+def plot_pinball_by_tau(
+    summary: pd.DataFrame, methods=None, ax: plt.Axes | None = None
+) -> plt.Axes:
+    """
+    Relative pinball loss against the service level τ, one line per method.
+
+    The question this answers is whether the *ranking* changes with the cost
+    asymmetry. Lines that cross mean it does: the best method for a
+    perishable (τ below 0.5) is not the best for an ambient item (τ near
+    0.9). Lower is better everywhere; values at different τ are on different
+    scales and must not be averaged along a line.
+    """
+    ax = ax or plt.gca()
+    methods = _present(summary, methods)
+    kinds = summary.drop_duplicates("method").set_index("method")["kind"]
+    for name in methods:
+        s = summary[summary["method"] == name].sort_values("tau")
+        ax.plot(
+            s["tau"],
+            s["pinball_rel"],
+            marker=BENCH_MARKERS.get(name, "o"),
+            ms=5,
+            label=name,
+            **_method_style(name, kinds[name]),
+        )
+    ax.set_xticks(sorted(summary["tau"].unique()))
+    ax.set_xlabel("service level τ  (share of weeks the order should cover)")
+    ax.set_ylabel("pinball loss ÷ mean weekly sales")
+    ax.set_title("Quantile score by service level  (FPP §5.9; lower is better)")
+    ax.grid(axis="x", visible=False)
+    legend_below(ax)
+    return ax
+
+
+def plot_coverage_by_tau(
+    summary: pd.DataFrame, methods=None, ax: plt.Axes | None = None
+) -> plt.Axes:
+    """
+    Achieved coverage against the target τ. A perfectly calibrated method
+    sits on the diagonal: its 0.9-quantile order covers 90% of weeks. Above
+    the line is over-ordering, below is stockouts more often than promised.
+    The gap is how well one year's error distribution described the next.
+    """
+    ax = ax or plt.gca()
+    methods = _present(summary, methods)
+    kinds = summary.drop_duplicates("method").set_index("method")["kind"]
+    taus = sorted(summary["tau"].unique())
+    ax.plot(
+        [taus[0] - 0.05, taus[-1] + 0.05],
+        [taus[0] - 0.05, taus[-1] + 0.05],
+        color=AXIS,
+        lw=1.0,
+        zorder=1,
+        label="perfect calibration",
+    )
+    for name in methods:
+        s = summary[summary["method"] == name].sort_values("tau")
+        ax.plot(
+            s["tau"],
+            s["coverage"],
+            marker=BENCH_MARKERS.get(name, "o"),
+            ms=5,
+            label=name,
+            **_method_style(name, kinds[name]),
+        )
+    ax.set_xticks(taus)
+    ax.set_xlabel("target service level τ")
+    ax.set_ylabel("share of weeks covered")
+    ax.set_title("Achieved coverage against target")
+    ax.grid(axis="x", visible=False)
+    legend_below(ax)
+    return ax
+
+
+def plot_weekly_order_band(
+    scored: pd.DataFrame,
+    series_id: str,
+    method: str,
+    taus=(0.3, 0.5, 0.7, 0.9),
+    ax: plt.Axes | None = None,
+) -> plt.Axes:
+    """
+    One store, one method: each scored week's actual total against the
+    order-up-to levels at several service levels.
+
+    The black line is what the store sold each week. The coloured bands are
+    the quantile forecasts: the τ = 0.5 line is the median forecast, the
+    upper edge is τ = 0.9 (what a 90% service level would order) and the
+    lower edge τ = 0.3 (what a perishable's economics would order). Weeks
+    where black rises above a band's top edge are the stockouts that service
+    level would have accepted. Holiday weeks are shaded.
+    """
+    ax = ax or plt.gca()
+    s = scored[(scored["id"] == series_id) & (scored["method"] == method)]
+    wide = s.pivot_table(index="origin", columns="tau", values="q").sort_index()
+    actual = s.drop_duplicates("origin").set_index("origin")["actual"].reindex(wide.index)
+    x = wide.index + pd.Timedelta(days=1)  # the Monday the order covers from
+    lo, mid, hi = min(taus), 0.5, max(taus)
+    if lo in wide and hi in wide:
+        ax.fill_between(
+            x,
+            wide[lo],
+            wide[hi],
+            color=SERIES_1,
+            alpha=0.18,
+            lw=0,
+            zorder=1,
+            label=f"order-up-to band, τ = {lo} to {hi}",
+        )
+    if mid in wide:
+        ax.plot(
+            x,
+            wide[mid],
+            color=SERIES_1,
+            lw=1.4,
+            zorder=2,
+            label="median forecast (τ = 0.5)",
+        )
+    if hi in wide:
+        ax.plot(x, wide[hi], color=SERIES_1, lw=0.9, ls="--", zorder=2, label=f"τ = {hi}")
+    ax.plot(x, actual, color=INK, lw=1.4, zorder=3, label="actual weekly sales")
+
+    holiday = (
+        s.drop_duplicates("origin").set_index("origin")["week_kind"].reindex(wide.index)
+    )
+    for origin, kind in holiday.items():
+        if kind == "holiday":
+            ax.axvspan(
+                origin + pd.Timedelta(days=1),
+                origin + pd.Timedelta(days=8),
+                color=SERIES_5,
+                alpha=0.12,
+                lw=0,
+                zorder=0,
+            )
+    ax.plot([], [], color=SERIES_5, alpha=0.4, lw=8, label="holiday week")
+
+    ax.set_ylabel("units/week")
+    ax.set_title(
+        f"{series_id.split('_evaluation')[0]} — {method}: weekly order-up-to levels"
+    )
+    ax.margins(x=0.01)
+    _date_axis(ax, x.min(), x.max())
+    legend_below(ax, ncols=5)
+    return ax

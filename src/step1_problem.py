@@ -153,6 +153,18 @@ class Config:
     # clock, not a price. An item whose price actually moves may want it on.
     use_price: bool = False
 
+    # Whether the rolling-mean, rolling-sd and same-weekday features skip days
+    # inside the holiday window (two days before a major event to one day
+    # after). The concern is carry-over: with a plain 7-day mean, the week
+    # after Independence Day is forecast from a level that includes the
+    # spike. The model also receives days_since_holiday, so it has a second
+    # route to the same information; whether masking helps on top of that is
+    # an empirical question, and this flag is how it is asked. Asked on
+    # 2026-09-21: masking made XGBoost slightly worse on both kinds of week
+    # (0.673 vs 0.665 mean RMSSE), so it stays off. OPEN_QUESTIONS.md has the
+    # numbers.
+    mask_holidays: bool = False
+
     # Fixed so that repeat runs on identical inputs give identical output. The
     # validator checks this.
     seed: int = 0

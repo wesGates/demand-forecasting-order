@@ -36,6 +36,10 @@ Write-up in progress. Results below are preliminary.
   full year, plus RMSE, MAE, bias, and win rates — every table split into
   normal and holiday weeks, so a pooled number can never hide where a win
   came from.
+- Turns the forecast into an **order quantity**: the weekly total, at a
+  chosen service level, from each method's own calibrated error quantiles
+  (FPP §5.5), scored with the quantile score (§5.9) across a range of service
+  levels — because a symmetric error cannot see an asymmetric cost.
 - Refuses to report a number until a validator has passed.
 
 ## Why the safeguards are the point
@@ -51,12 +55,13 @@ two failures cannot recur:
   anything that reaches past the origin.
 - **Six benchmarks, not one.** Seasonal naïve stakes everything on one past
   day; on a noisy series its error is about √2 worse than predicting the mean.
-- **`python -m src.validate`** runs seven checks that each catch a different way
+- **`python -m src.validate`** runs eight checks that each catch a different way
   of being *plausibly* wrong — closed-form benchmark answers, feature values
   recomputed by a second route, per-state SNAP flags against the raw calendar,
-  holiday-proximity counts and closure flags recounted from the calendar, a
-  synthetic noise floor no honest model can beat, a shuffled target no model
-  should learn from, and byte-identical reruns.
+  holiday-proximity counts and closure flags recounted from the calendar, the
+  quantile scoring on errors of known distribution, a synthetic noise floor no
+  honest model can beat, a shuffled target no model should learn from, and
+  byte-identical reruns.
 
 ## Layout
 
@@ -68,12 +73,16 @@ src/
   features.py         origin-based lags, rolling stats, calendar; leakage assertion
   step4_models.py     six benchmarks + XGBoost + ETS + ARIMA behind one interface
   step5_evaluate.py   walk-forward harness, RMSSE, normal/holiday split, tables
+  order.py            weekly totals, calibrated quantile forecasts, pinball loss
   plots.py            every figure, on one palette
   validate.py         the gate
-  render_figures.py   regenerate all figures to figures/
+  render_figures.py   regenerate all figures to figures/<notebook>/
 notebooks/
   01_explore.py       FPP step 3 — graph the data before modelling anything
   02_evaluate.py      FPP step 5 — run the comparison, read the diagnostics
+  03_order.py         FPP step 5, continued — from forecast to order quantity
+findings/             what the notebooks found for a particular item, dated
+report/               the write-up, with its own copies of the figures
 ```
 
 Notebooks are plain `.py` files with `# %%` cell markers: open in VS Code and
@@ -101,8 +110,9 @@ Then:
 
 ```
 python -m src.validate          # must pass before any number is quoted
-python -m src.render_figures    # all figures -> figures/
+python -m src.render_figures    # all figures -> figures/<notebook>/
 python -m src.step5_evaluate    # the comparison, as tables
+python -m src.order             # from forecast to order quantity (two-year run)
 ```
 
 ## Preliminary result
@@ -142,6 +152,41 @@ What the year says that the spring slice could not:
   Sunday, the busiest day, and they repeat it for the week.
 - XGBoost's over-forecast is smaller over the year (+0.9/day) than in the
   spring slice (+1.2), but it remains the one model with a positive bias.
+
+### From forecast to order
+
+A point forecast is not an order. Ordering the mean stocks out about half
+the weeks — measured, not assumed: the classical models under-forecast the
+weekly total in 50% of weeks, XGBoost in 44%. The order is a quantile of the
+week's demand at a chosen service level τ, and τ is an economic choice (the
+understock cost over the sum of both costs), unknown for an anonymised item,
+so it is reported as a range. Each method's quantiles come from its own
+weekly errors over a *calibration year* (May 2014 – May 2015), applied to
+the scored year — never estimated on the weeks they are judged on.
+
+Relative pinball loss (FPP §5.9's quantile score over mean weekly sales;
+lower is better; compare within a column, never along a row):
+
+| method | τ = 0.3 | τ = 0.5 | τ = 0.7 | τ = 0.9 | coverage at 0.9 |
+|---|---|---|---|---|---|
+| ARIMA | **0.094** | **0.106** | **0.096** | 0.053 | 0.92 |
+| XGBoost | 0.114 | 0.116 | 0.104 | **0.052** | 0.92 |
+| moving average (28) | 0.105 | 0.117 | 0.107 | 0.062 | 0.90 |
+| ETS | 0.104 | 0.120 | 0.107 | 0.059 | 0.89 |
+| seasonal naïve (last week) | 0.109 | 0.123 | 0.110 | 0.061 | 0.89 |
+
+- **The ranking does change with the cost asymmetry.** At τ = 0.9, an
+  ambient item's service level, XGBoost and ARIMA tie. At τ = 0.3, a
+  perishable's, XGBoost falls to fifth, behind two benchmarks. RMSSE said
+  nothing about this, and could not.
+- ARIMA is the most robust method across the whole range, and the best on
+  holiday weeks at every τ.
+- Coverage is close to target for every model: a 0.9 order covered 89–92% of
+  weeks. One year's errors described the next well enough to order from.
+- XGBoost's calibration transfers less well than ARIMA's: its errors shrink
+  as it gets more training data, so last year's spread overstates this
+  year's. Letting the calibration window grow through the scored year, as a
+  live system would, closes most of the gap (0.099 at τ = 0.3).
 
 ## What is deliberately not claimed
 
