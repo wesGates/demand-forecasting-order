@@ -381,9 +381,11 @@ ARIMA_GRID = [
 ARIMA_FIT_DAYS = 730
 
 # Chosen orders, one per series, filled on the first fold each series is
-# forecast and reused after. The harness walks folds oldest first, so the
-# selection is made on the earliest training window and never sees a scored
-# day. Reset between unrelated runs with `arima_orders.clear()`.
+# forecast in a run and reused for the rest of that run. The harness walks
+# folds oldest first, so the selection is made on the earliest training
+# window and never sees a scored day - and `run_walk_forward` clears this at
+# the start of every run, so a second layout in the same process selects
+# afresh on its own first window.
 arima_orders: dict[
     str, tuple[tuple[int, int, int], tuple[int, int, int, int], float]
 ] = {}

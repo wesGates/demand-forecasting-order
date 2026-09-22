@@ -63,9 +63,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from src import step2_data
 from src.features import FEATURE_VERSION, build_supervised, holiday_window
 from src.step1_problem import Config
-from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context
+from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, arima_orders
 
 # --------------------------------------------------------------------------- #
 # Supervised matrices, cached
@@ -73,8 +74,18 @@ from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context
 
 
 def _supervised_path(cfg: Config, series_id: str):
+    # The panel version is in the key too: a loader change (closure imputation
+    # was one) changes the sales the lags and targets are built from, and a
+    # matrix built from the old panel must not be served for the new one.
     key = repr(
-        (FEATURE_VERSION, series_id, cfg.horizon, cfg.use_price, cfg.mask_holidays)
+        (
+            FEATURE_VERSION,
+            step2_data.CACHE_VERSION,  # via the module, so a bump is always seen
+            series_id,
+            cfg.horizon,
+            cfg.use_price,
+            cfg.mask_holidays,
+        )
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
     return cfg.cache_dir / f"supervised_v{FEATURE_VERSION}_{digest}.parquet"
@@ -172,7 +183,6 @@ def _predictions_path(cfg: Config, methods: list[str]):
     twenty-minute run.
     """
     from src import step4_models
-    from src.step2_data import CACHE_VERSION
 
     code = _code_digest(Path(__file__)) + _code_digest(Path(step4_models.__file__))
     key = repr(
@@ -180,7 +190,7 @@ def _predictions_path(cfg: Config, methods: list[str]):
             sorted((k, repr(v)) for k, v in cfg.__dict__.items()),
             methods,
             FEATURE_VERSION,
-            CACHE_VERSION,
+            step2_data.CACHE_VERSION,
             code,
         )
     )
@@ -219,6 +229,12 @@ def run_walk_forward(
     cache_path = _predictions_path(cfg, methods)
     if use_cache and cache_path.exists():
         return pd.read_parquet(cache_path)
+
+    # ARIMA memoises its chosen order per series on the first fold it sees.
+    # That must mean the first fold of *this* run: a second run in the same
+    # process with a different fold layout would otherwise inherit an order
+    # chosen on a window that may reach into its own scored period.
+    arima_orders.clear()
 
     last_date = df["date"].max()
     origins = cfg.fold_origins(last_date)
@@ -341,6 +357,8 @@ def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
                 "bias": float(np.mean(err)),
                 "rmsse": rmse / scale if scale > 0 else np.inf,
                 "n_days": len(g),
+                # the store's level that week - what "busiest first" orders by
+                "mean_actual": float(np.mean(g["actual"])),
             }
         )
 
@@ -371,8 +389,14 @@ def rmsse_by_store(scores: pd.DataFrame, week_kind: str | None = None) -> pd.Dat
         index="store_id", columns="method", values="rmsse", aggfunc="mean"
     )
     # Order stores by volume (busiest first) and methods by overall RMSSE.
+    # Volume is the mean actual level; an earlier version sorted by RMSE
+    # ascending, which put the *quietest* store first under a "busiest
+    # first" label.
     store_order = (
-        scores.groupby("store_id", observed=True)["rmse"].mean().sort_values().index
+        scores.groupby("store_id", observed=True)["mean_actual"]
+        .mean()
+        .sort_values(ascending=False)
+        .index
     )
     method_order = table.mean(axis=0).sort_values().index
     return table.reindex(index=store_order, columns=method_order)

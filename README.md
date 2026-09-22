@@ -77,6 +77,7 @@ src/
   plots.py            every figure, on one palette
   validate.py         the gate
   render_figures.py   regenerate all figures to figures/<notebook>/
+tests/                pytest suite: benchmarks, features, harness, models, ordering
 notebooks/
   01_explore.py       FPP step 3 — graph the data before modelling anything
   02_evaluate.py      FPP step 5 — run the comparison, read the diagnostics
@@ -110,6 +111,7 @@ Then:
 
 ```
 python -m src.validate          # must pass before any number is quoted
+python -m pytest tests          # 82 tests pinning documented behaviour
 python -m src.render_figures    # all figures -> figures/<notebook>/
 python -m src.step5_evaluate    # the comparison, as tables
 python -m src.order             # from forecast to order quantity (two-year run)

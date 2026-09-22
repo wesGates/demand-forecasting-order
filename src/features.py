@@ -189,11 +189,9 @@ def build_fold_features(
     forecast. The returned frame carries `horizon` (1..h), which is what
     separates otherwise identical rows.
     """
-    if len(history) and history["date"].max() > origin:
-        raise ValueError(
-            f"history extends to {history['date'].max().date()}, past the "
-            f"origin {origin.date()}. Cut it before calling."
-        )
+    # The structural check: history must end at or before the origin, and
+    # every target must be after it. Refuses rather than trusts.
+    assert_no_leakage(history, targets, origin)
 
     feats = pd.concat(
         [

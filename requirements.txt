@@ -14,3 +14,4 @@ mplcursors==0.7.1     # hover tooltips in pop-out figure windows; optional
 
 # development only - formatting and linting
 ruff==0.16.7
+pytest==9.1.1

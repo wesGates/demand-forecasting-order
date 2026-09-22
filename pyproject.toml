@@ -22,4 +22,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # A bare trailing expression is how a notebook cell displays its result.
 "notebooks/*" = ["B018"]
+# Tests assert on shapes and idioms the production rules discourage.
+"tests/*" = ["B017", "B905", "PD101"]
 
