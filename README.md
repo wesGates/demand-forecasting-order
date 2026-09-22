@@ -1,4 +1,24 @@
-# Demand forecasting on M5 — a forecaster's-toolbox build
+# Demand forecasting on M5 — from point forecast to order quantity
+
+This repository continues
+[demand-forecasting](https://github.com/wesGates/demand-forecasting), which
+established that XGBoost, ETS and seasonal ARIMA all beat six benchmarks on
+a fast-moving item at ten stores, and that a point forecast is not an
+order. The work here, in order:
+
+1. Train XGBoost on the quantile objective at chosen service levels and
+   compare it with ETS and ARIMA given the same treatment, scored with the
+   quantile score and coverage.
+2. Make every day a fold origin (`Config(fold_step=1)`) so the scoreboard
+   averages over all order days; adopt it as the reported layout.
+3. Run the pooled model across stores, the design that scales to thousands
+   of items, and see whether it helps the quiet stores.
+4. Repeat the study on an intermittent item.
+
+The parent's README follows; it describes the pipeline this builds on.
+
+---
+
 
 Daily unit-sales forecasting for retail replenishment, built step by step
 along the five-stage method in *Forecasting: Principles and Practice*
