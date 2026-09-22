@@ -209,7 +209,9 @@ def test_arima_order_is_selected_on_this_runs_first_training_window(
         windows.append(len(y))
         return ((0, 0, 0), (0, 1, 0, season), 1.0)
 
-    monkeypatch.setattr(m4, "_select_arima_order", fake_select)
+    import src.models.arima_model as arima_model
+
+    monkeypatch.setattr(arima_model, "_select_arima_order", fake_select)
     m4.arima_orders.clear()
     one_store = panel[panel["store_id"] == "S_BIG"]
 

@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -171,31 +172,109 @@ def _code_digest(path: Path) -> str:
     return hashlib.sha1(ast.dump(tree).encode()).hexdigest()
 
 
-def _predictions_path(cfg: Config, methods: list[str]):
-    """
-    Cache location for a full walk-forward run.
+# Config fields that do not change a forecast: where the files live. Leaving
+# them out of the key makes a cache portable between folders and machines.
+_PATH_FIELDS = ("data_dir", "cache_dir")
 
-    The key covers everything that could change a forecast: the config, the
-    method list, the feature and panel versions, and the *code* of the model
-    and harness modules. Editing a model therefore invalidates the cache
-    without anyone remembering to bump a number. Comments and docstrings are
-    stripped before hashing, so rewording a docstring does not throw away a
-    twenty-minute run.
+
+def _config_fields(cfg: Config) -> dict[str, str]:
+    """The config as {field: repr(value)}, minus the path fields."""
+    return {k: repr(v) for k, v in sorted(cfg.__dict__.items()) if k not in _PATH_FIELDS}
+
+
+def _method_code(method: str) -> str:
+    """
+    Digest of the code a method's predictions depend on: the harness, the
+    shared base (Context and helpers), the features and loader versions, and
+    the module that method lives in. Editing one model's module changes only
+    that method's digest, so the others' cached predictions stay valid.
     """
     from src import step4_models
+    from src.models import base
 
-    code = _code_digest(Path(__file__)) + _code_digest(Path(step4_models.__file__))
-    key = repr(
-        (
-            sorted((k, repr(v)) for k, v in cfg.__dict__.items()),
-            methods,
-            FEATURE_VERSION,
-            step2_data.CACHE_VERSION,
-            code,
+    parts = [
+        _code_digest(Path(__file__)),
+        _code_digest(Path(base.__file__)),
+        _code_digest(Path(step4_models.MODULE_OF[method].__file__)),
+        str(FEATURE_VERSION),
+        str(step2_data.CACHE_VERSION),
+    ]
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def _method_cache_path(cfg: Config, method: str) -> Path:
+    """
+    One parquet per (config, method, code) under cache/predictions/, with a
+    JSON sidecar recording the config fields it was built from. The sidecar
+    is what lets a later config, with a new field at its default, adopt the
+    run instead of repeating it.
+    """
+    key = repr((_config_fields(cfg), method, _method_code(method)))
+    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+    return cfg.cache_dir / "predictions" / f"{method}_{digest}.parquet"
+
+
+def _adopt_cached(cfg: Config, method: str) -> Path | None:
+    """
+    Find an earlier run of `method` that this config can reuse.
+
+    A run is reusable when it was built by the same code (same digest), and
+    every config field the two have in common agrees, and every field the
+    new config has that the old one lacks is at its dataclass default - the
+    old run was made before that field existed, which is the same thing as
+    the field being at its default. Adding `mask_holidays=False` to Config,
+    for instance, must not throw away a twenty-minute run made without it.
+    """
+    from dataclasses import fields
+
+    want = _config_fields(cfg)
+    code = _method_code(method)
+    defaults = {f.name: repr(f.default) for f in fields(cfg)}
+    folder = cfg.cache_dir / "predictions"
+    if not folder.exists():
+        return None
+    for meta in sorted(folder.glob(f"{method}_*.json")):
+        info = json.loads(meta.read_text())
+        if info.get("code") != code or info.get("method") != method:
+            continue
+        have = info.get("config", {})
+        if any(want[k] != have[k] for k in want.keys() & have.keys()):
+            continue
+        if any(want[k] != defaults.get(k) for k in want.keys() - have.keys()):
+            continue
+        parquet = meta.with_suffix(".parquet")
+        if parquet.exists():
+            return parquet
+    return None
+
+
+def _write_cached(cfg: Config, method: str, frame: pd.DataFrame) -> Path:
+    path = _method_cache_path(cfg, method)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path, index=False)
+    path.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "method": method,
+                "code": _method_code(method),
+                "config": _config_fields(cfg),
+            },
+            indent=1,
         )
     )
-    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
-    return cfg.cache_dir / f"predictions_{digest}.parquet"
+    return path
+
+
+def _read_cached(cfg: Config, method: str) -> pd.DataFrame | None:
+    path = _method_cache_path(cfg, method)
+    if path.exists():
+        return pd.read_parquet(path)
+    adopted = _adopt_cached(cfg, method)
+    if adopted is not None:
+        frame = pd.read_parquet(adopted)
+        _write_cached(cfg, method, frame)  # re-key under this config, once
+        return frame
+    return None
 
 
 def run_walk_forward(
@@ -216,9 +295,12 @@ def run_walk_forward(
     `methods` defaults to every benchmark and every model. Pass a subset to
     iterate on one method quickly.
 
-    A full run takes on the order of twenty minutes (ARIMA is the slow one),
-    so the result is cached to parquet under a key that includes the source of
-    the model code - see `_predictions_path`. `use_cache=False` forces a rerun.
+    A full run takes on the order of twenty minutes on the step-7 layout
+    (ARIMA is the slow one) and about seven times that on step 1, so each
+    method's predictions are cached to parquet under a key that includes the
+    config and the code that method depends on - see `_method_cache_path`.
+    A method whose code has not changed is served from cache while the others
+    are refitted. `use_cache=False` forces a full rerun.
     """
     methods = list(methods or ALL_FORECASTERS)
     unknown = set(methods) - set(ALL_FORECASTERS)
@@ -226,9 +308,18 @@ def run_walk_forward(
         raise ValueError(
             f"unknown method(s) {sorted(unknown)}; choose from {list(ALL_FORECASTERS)}"
         )
-    cache_path = _predictions_path(cfg, methods)
-    if use_cache and cache_path.exists():
-        return pd.read_parquet(cache_path)
+
+    # One cache file per method. Only the methods without a valid file are
+    # fitted, so editing XGBoost does not refit ARIMA.
+    cached: dict[str, pd.DataFrame] = {}
+    if use_cache:
+        for name in methods:
+            frame = _read_cached(cfg, name)
+            if frame is not None:
+                cached[name] = frame
+    to_run = [m for m in methods if m not in cached]
+    if not to_run:
+        return _ordered(cached, methods)
 
     # ARIMA memoises its chosen order per series on the first fold it sees.
     # That must mean the first fold of *this* run: a second run in the same
@@ -291,7 +382,7 @@ def run_walk_forward(
             in_window = holiday_window(targets).to_numpy(dtype=bool)
             week_kind = "holiday" if in_window.any() else "normal"
 
-            for name in methods:
+            for name in to_run:
                 forecast = np.asarray(ALL_FORECASTERS[name](ctx), dtype=float)[
                     : len(targets)
                 ]
@@ -318,11 +409,21 @@ def run_walk_forward(
                         }
                     )
 
-    out = pd.DataFrame(rows)
-    if use_cache:
-        cfg.cache_dir.mkdir(parents=True, exist_ok=True)
-        out.to_parquet(cache_path, index=False)
-    return out
+    fresh = pd.DataFrame(rows)
+    for name in to_run:
+        part = fresh[fresh["method"] == name].reset_index(drop=True)
+        cached[name] = part
+        if use_cache:
+            _write_cached(cfg, name, part)
+    return _ordered(cached, methods)
+
+
+def _ordered(parts: dict[str, pd.DataFrame], methods: list[str]) -> pd.DataFrame:
+    """Concatenate per-method frames in the requested method order."""
+    frames = [parts[m] for m in methods if m in parts and len(parts[m])]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -428,6 +529,58 @@ def win_rates(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFram
     return pd.DataFrame(out).sort_index()
 
 
+# The benchmark the headline claims are made against. Seasonal naive is what
+# an orderer's default screen shows (this day last week), and it is also the
+# RMSSE denominator, so "improvement over it" and "1 - RMSSE" are the same
+# quantity seen two ways. The 28-day moving average is the harder benchmark
+# and is reported alongside as the stress check.
+REFERENCE_BENCHMARK = "seasonal_naive"
+
+
+def improvement_over(
+    scores: pd.DataFrame,
+    benchmark: str = REFERENCE_BENCHMARK,
+    week_kind: str | None = None,
+) -> pd.DataFrame:
+    """
+    Per method: how often and by how much it beat one benchmark, fold by fold.
+
+    `win_rate` is the share of series-folds with lower RMSSE than the
+    benchmark. The improvement columns are the per-fold percentage reduction
+    in RMSSE relative to the benchmark - mean, and the quartiles, because a
+    mean improvement can hide a quarter of folds that got worse. Rows for the
+    benchmark itself are dropped.
+    """
+    scores = _weeks(scores, week_kind)
+    wide = scores.pivot_table(
+        index=["id", "fold"], columns="method", values="rmsse", aggfunc="first"
+    )
+    if benchmark not in wide:
+        raise ValueError(f"{benchmark!r} is not among the scored methods")
+    rows = []
+    for m in wide.columns:
+        if m == benchmark:
+            continue
+        pair = wide[[m, benchmark]].dropna()
+        gain = (pair[benchmark] - pair[m]) / pair[benchmark] * 100
+        rows.append(
+            {
+                "method": m,
+                "win_rate": float((pair[m] < pair[benchmark]).mean()),
+                "mean_improvement_pct": float(gain.mean()),
+                "q1_pct": float(gain.quantile(0.25)),
+                "median_pct": float(gain.median()),
+                "q3_pct": float(gain.quantile(0.75)),
+                "n_folds": len(pair),
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values("median_pct", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
 def summarise(scores: pd.DataFrame) -> pd.DataFrame:
     """
     One row per method: mean and median RMSSE across all series-folds, mean
@@ -470,6 +623,11 @@ if __name__ == "__main__":
     )
     print("=== summary: mean RMSSE per method, best first (all / normal / holiday) ===")
     print(summarise(scores).round(3).to_string(index=False))
+    for bench in (REFERENCE_BENCHMARK, "moving_average_28"):
+        print(
+            f"\n=== win rate and % improvement in RMSSE over {bench}, per series-fold ==="
+        )
+        print(improvement_over(scores, bench).round(2).to_string(index=False))
     for week in (None, "normal", "holiday"):
         label = week or "all"
         print(

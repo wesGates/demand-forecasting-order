@@ -1,190 +1,207 @@
-# Does a learned model beat the orderer's screen? Daily grocery demand, ten stores, one year of forecasts
+# XGBoost Against Classical Methods for Daily Store Demand
 
-*A forecaster's-toolbox study on public data, built along the five steps of*
-Forecasting: Principles and Practice *(Hyndman & Athanasopoulos).*
-Draft of 2026-09-22. Code and tests: the repository this file lives in.
+Wesley Gates. Draft, 22 September 2026.
 
----
-
-## The question, and the short answer
-
-A store orders a fast-moving grocery item every week. The default screen an
-orderer sees is *this day last week*; before a holiday they look at *this day
-last year*. Does a gradient-boosted model beat that, by how much, and does the
-answer depend on the store or on the week?
-
-On one fast-moving item at ten stores, scored on every week of a full year:
-
-- **Three learned models, XGBoost, exponential smoothing (ETS) and seasonal
-  ARIMA, all beat every simple method at every store**, cutting scaled error
-  by about a quarter against the orderer's default screen. They are within
-  0.02 of each other over the year: on ordinary weeks a tie.
-- **Which one wins depends on the store and on the week.** XGBoost leads at
-  the Texas stores and on holiday weeks; the classical models lead at the
-  California stores and on ordinary weeks. ETS, the one model that cannot be
-  told a holiday is coming, falls furthest on holiday weeks.
-- **A point forecast is not an order.** Ordering the forecast stocks out half
-  the weeks, measured. Turned into a quantile order at a chosen service
-  level, the model ranking *changes with the cost of being wrong*: XGBoost
-  ties ARIMA where running out is the expensive mistake and falls to fifth
-  where holding is. A symmetric error metric could not have shown that.
-
-Everything reported here passed an eight-check validator and an 82-test
-suite before it was quoted, and every table can be regenerated from the
-repository in under a minute from cache.
+Public data: M5 (Walmart daily unit sales, 2011–2016). Code, tests and
+figures are in this repository.
 
 ---
 
-## 1. Defining the problem
+## 1. Executive Summary
 
-Replenishment consumes a forecast **one day at a time**: the store runs out on
-a Saturday, not "this week". So the forecast is daily, seven days ahead from
-a single origin, exactly as an order is placed: stand on Sunday, order for
-Monday through Sunday. In the book's notation, ŷ<sub>T+h|T</sub> for
-h = 1…7.
+A forecasting pipeline was built for daily unit sales of one grocery item at
+ten stores, and used to test whether a gradient-boosted model (XGBoost) beats
+the forecast an orderer can produce without one. The comparison was scored
+on a full year of weekly forecasts, 52 walk-forward folds from 25 May 2015
+to 22 May 2016, against six benchmarks and two classical models. The
+reference benchmark is the seasonal naïve forecast, this day last week,
+because that is what an orderer's default screen can show.
 
-Two consequences shape everything after. Because the forecast feeds an order,
-**bias matters in its own right**: a method that is 5% low every day turns
-into stockouts, while a noisy but centred one only turns into safety stock.
-And because the order is a weekly quantity at a service level, the point
-forecast is only the first half of the answer; section 6 supplies the second.
+Table 1: Headline results against the seasonal naïve benchmark, 520
+store-weeks. Improvement is the per-week reduction in scaled error (RMSSE).
 
-The data is the public M5 set: daily unit sales for Walmart stores in three
-US states, 2011–2016, with a calendar of events, SNAP benefit days and shelf
-prices. The item studied, `FOODS_3_586`, was chosen by the availability
-screen in step 3: continuously stocked at all ten stores, selling 14 to 103
-units a day depending on the store. That volume gradient is what the
-comparison is run along.
+| model | win rate | mean improvement | median | Q1 | Q3 |
+|---|---|---|---|---|---|
+| ARIMA (seasonal, holiday regressors) | 82% | 20% | 24% | 10% | 37% |
+| ETS (Holt-Winters) | 83% | 19% | 21% | 8% | 33% |
+| XGBoost | 75% | 16% | 23% | 0% | 40% |
 
-## 2. Gathering the data, and two things the loader does
+All three models beat the benchmark at every store. Over the year their
+mean scaled errors are 0.65, 0.67 and 0.67, close enough that the ordinary
+weeks are a tie. XGBoost has the widest spread: its best quarter of weeks
+improves the most, and its worst quarter does not improve at all. It wins at
+the Texas stores and on holiday weeks. The classical models win at the
+California stores and on ordinary weeks. XGBoost also carries a systematic
+over-forecast at the busy stores that the error score does not show and the
+bias column does.
 
-The three raw files are reshaped to one row per store-item-day and joined to
-the calendar, with each row taking the SNAP flag for its own state. Two
-decisions live in the loader rather than downstream, so nothing can see the
-raw version by accident.
+Everything quoted here passed an eight-check validator and an 82-test suite
+before it was written down.
 
-**A closure is a missing value, not a zero.** Every store records zero on
-Christmas Day because the stores were shut. Left as zero it does damage well
-beyond the day: the seasonal-naïve forecast for the following week reads it,
-every rolling mean is dragged down for a week, and smoothing methods take it
-as a level shock. Following the book's treatment of missing values (§13.7)
-the day is imputed with the same-weekday mean of the surrounding weeks,
-flagged, and excluded from every score.
+## 2. Background and Problem
 
-**Which holidays matter is measured, not assumed.** Each of the calendar's 30
-events was scored against a same-weekday baseline, on the day and on the two
-days before it. Seven move this item by more than 15%: Thanksgiving (1.7×
-on the day), Christmas (1.7× two days before, 1.5× the day before, then
-shut), Labor Day (1.4×), Independence Day and Valentine's Day (1.2× with a
-1.3× run-up), Easter (1.2× run-up) and New Year (0.85×). The other 23 sit
-within a few percent of baseline. Those seven drive three features known
-years in advance: a flag, days to the next major event, and days since the
-last. An on/off flag alone cannot learn the run-up before Christmas, which in
-this data is larger than most holidays' own day.
+Replenishment consumes a forecast one day at a time, so the forecast is
+daily, seven days ahead from a single origin: stand on Sunday, forecast
+Monday through Sunday. Two things about it matter more than in a general
+forecasting exercise. Bias matters in its own right, because a forecast
+that runs low every day turns into stockouts. And the comparison has to be
+against what a person can do, because an orderer can work from a screen
+that shows the same day last week and, before a holiday, the same day last
+year.
 
-![Calendar events: how much each one moves sales](figures/01_explore_6_event_effects.png)
+The M5 dataset was used because it is public and structurally close to the
+problem: daily sales per store and item, a calendar of events, SNAP benefit
+days by state, and weekly shelf prices. The item, `FOODS_3_586`, was chosen
+because it is continuously stocked at all ten stores and sells 14 to 103
+units a day depending on the store, which gives a volume gradient to test
+across.
 
-## 3. Looking before modelling
+Requirements set at the start:
 
-The book is blunt: *always start by graphing the data.* Four things came out
-of it.
-
-**The demand is smooth, everywhere.** The standard classification for
-whether a series is a candidate for a learned model at all is two numbers:
-the average demand interval (how often it sells) and the squared coefficient
-of variation of the sale sizes (how consistent the amounts are). Cut at the
-conventional thresholds they give four classes: smooth, erratic,
-intermittent, lumpy. Every store of this item is smooth: it sells every day
-(ADI 1.00–1.01) with sale sizes varying modestly (CV² 0.06–0.24 against a
-cut of 0.49). That is a fact about the item, and it decides which question
-the study can answer: not "does the best method change with demand class",
-but "which method wins on a fast mover, and does it depend on the store".
-The method is the reusable part: an intermittent item would be routed to
-different methods and different metrics, and the classification is computed
-on training data only, so no label is informed by a scored day.
-
-![Demand classification](figures/01_explore_2_classmap.png)
-
-**The structure is weekly, on top of a drifting level.** Weekend days sell
-about 50% more than midweek at every store once each is indexed to its own
-mean; the autocorrelation peaks at lags 7, 14, 21 and 28 with lag 1 strong
-in its own right, and lags 6 and 8 nearly as tall as 7 (a broad weekend).
-Those are the lags the models were given, chosen from the evidence rather
-than by convention. An annual shape exists (August high, January low) on top
-of a multi-year decline: the busiest store averaged 109 a day in 2011 and 82
-in early 2016. The years share a shape, not a level.
-
-![One product, every store](figures/01_explore_1_grid.png)
-
-![Seasonal shape across stores](figures/01_explore_3b_season_all_stores.png)
-
-**SNAP days carry signal, price does not.** Sales on benefit days run 6%
-above ordinary days pooled, and positive at nine of ten stores; the dates
-are fixed by state and known years ahead, so the effect is free forecasting
-signal. Price, by contrast, took three values in five years, changing on the
-same dates at every store and never inside a forecast window: a clock, not a
-variable. Offered to the model it would teach "which era is it", which does
-not transfer to a product whose price moves. It was left out, and switching
-it on for XGBoost confirmed the call (scaled error 0.674 against 0.665).
-
-## 4. The methods, and why there are six benchmarks
-
-A single benchmark has misled this project once: an earlier version reported
-a 90% win rate that was wrong twice over, once because lag features reached
-into the test window, and once because the only benchmark was one a dull
-model beats without skill. The rebuilt study reports six, each answering a
-different "compared to what":
-
-| benchmark | what it encodes |
+| requirement | how it is enforced |
 |---|---|
-| seasonal naïve (lag 7) | the orderer's default screen: this day last week |
-| seasonal naïve (lag 364) | the orderer's holiday habit: this day last year |
-| 28-day moving average | the recent level, ignoring the weekday |
+| No feature may use data from after the forecast origin | a date assertion on every fold; two negative-control checks in the validator |
+| The comparison must include what an orderer can do by default | seasonal naïve at lag 7 and at lag 364 are benchmarks |
+| The comparison must include a benchmark a dull model cannot beat by accident | 28-day moving average and long-run mean are benchmarks |
+| Methods must be routed by the item's demand type | ADI / CV² classification, computed on training data only |
+| Every reported number must be reproducible | fixed seed, byte-identical rerun check, cached runs keyed on the code |
+
+An earlier version of this project reported a 90% win rate that turned out
+to be wrong for two reasons: lag features reached into the test window, and
+the only benchmark was one a dull model beats without skill. The current
+design is a response to that.
+
+## 3. Data Preparation
+
+The three raw files are reshaped to one row per store, item and day and
+joined to the calendar, with each row taking the SNAP flag for its own
+state. Two decisions were made in the loader rather than downstream.
+
+Christmas is a closure, not a zero. Every store records zero on Christmas
+Day because the stores were shut, and left as a zero it pulls down every
+rolling mean for a week and feeds the seasonal naïve forecast for the
+following week. The day is treated as a missing observation (FPP §13.7):
+imputed with the same-weekday mean of the surrounding weeks, flagged, and
+excluded from every score.
+
+Which holidays matter was measured. Each of the calendar's 30 events was
+scored against a same-weekday baseline, on the day and on the two days
+before it (Figure 1). Seven clear a 15% threshold: Thanksgiving, Christmas,
+Labor Day, Independence Day, Valentine's Day, Easter and New Year. The
+run-up before Christmas (1.7 times baseline two days before) is larger than
+most holidays' own day, so the models get three features from these events:
+a flag, days until the next, and days since the last. An on/off flag alone
+cannot represent a run-up.
+
+![Figure 1](figures/01_explore_6_event_effects.png)
+
+Figure 1: Each calendar event's sales relative to a same-weekday baseline,
+on the day (filled) and the larger of the two days before (open). The seven
+selected events are in colour. Christmas has no day marker because the
+stores were shut.
+
+## 4. Exploration
+
+Availability was checked first, since a long run of zero sales on a fast
+mover is a stocking gap rather than demand. The longest zero run at any
+store is 10 days; the screen warns at 30 and did not fire.
+
+The demand was then classified. Two numbers decide whether a series is a
+candidate for a learned model at all: the average demand interval (days per
+sale) and the squared coefficient of variation of the sale sizes. Every
+store of this item is smooth (Figure 2), with ADI at 1.00 and CV² between
+0.06 and 0.24 against a cut of 0.49. So the study cannot ask whether the
+best method changes with demand class; it asks which method wins on a fast
+mover and whether that depends on the store. The classification is the
+reusable part: an intermittent item would be routed to different methods and
+a different metric, which is where a learned model is expected to lose.
+
+![Figure 2](figures/01_explore_2_classmap.png)
+
+Figure 2: Demand classification. Every store sits in the smooth corner; the
+spread within the corner is the volume gradient the comparison runs along.
+
+The dominant structure is weekly. Weekend days sell about 50% more than
+midweek at every store, and the shape is shared across stores once each is
+indexed to its own mean. Lag 1 is strong on its own, so the recent level
+matters independently of the weekly pattern, and lags 6 and 8 are nearly as
+tall as 7, so the weekend peak is broad. There is a multi-year decline
+underneath: the busiest store averaged 109 units a day in 2011 and 82 in
+early 2016. SNAP benefit days run 6% above ordinary days and are positive at
+nine of ten stores, so the flag was kept. Price took three values in five
+years and never changed inside a forecast window, so it was left out; a
+check with it on made XGBoost slightly worse (0.674 against 0.665).
+
+## 5. Models and Benchmarks
+
+Six benchmarks were used (Table 2). The seasonal naïve at lag 7 is the
+reference for the headline claims: it is the default screen, and it is also
+the RMSSE denominator, so improvement over it and RMSSE are the same
+quantity seen two ways. The 28-day moving average is the hardest of the six
+to beat and is reported as the stress check.
+
+Table 2: Benchmarks.
+
+| benchmark | what it represents |
+|---|---|
+| seasonal naïve, lag 7 | the default screen: this day last week (reference) |
+| seasonal naïve, lag 364 | the holiday habit: this day last year |
+| 28-day moving average | the recent level, ignoring the weekday (stress check) |
 | mean | the whole history's level |
 | naïve, drift | the last value, flat and with a trend |
 
-Seasonal naïve stakes everything on one past day, so on a noisy series its
-error runs about √2 worse than predicting a mean, and a model can "beat" it
-by being sensibly dull. The moving average is the benchmark that actually
-competes.
+XGBoost was trained per store with early stopping on the last 90 days of
+each training window. Its features are:
 
-Three learned models sit above them. **XGBoost** on lag, rolling, same-weekday
-and calendar features. **ETS** (Holt-Winters with weekly seasonality), the
-book's first classical recommendation for this kind of data. **Seasonal
-ARIMA with regressors** for the holiday flag, the run-up and SNAP, so a
-classical model gets the same calendar information XGBoost gets. A plain
-ARMA is not in the set on purpose: it is ARIMA without the seasonal term,
-and on daily data with a weekly cycle it would need absurd orders to imitate
-what one seasonal term captures.
+- lags of daily sales at 1, 2, 3, 7, 14, 21 and 28 days before the origin;
+- rolling mean and standard deviation over the last 7, 28 and 56 days, and
+  the ratio of the 7-day to the 56-day mean;
+- same-weekday means over the last 4 and 8 weeks;
+- calendar: weekday, weekend flag, day of month, month, day of year;
+- SNAP flag, any-event flag, and the three holiday-proximity features;
+- the horizon, 1 to 7, since the features above are shared by the seven
+  target days of a fold.
 
-Every feature for a target day is computable from data available at the
-origin, and that is asserted mechanically rather than trusted: training rows
-are filtered by *when their answer became observable*, and a date comparison
-refuses anything that reaches past the origin.
+Two classical models were fitted for comparison. Holt-Winters exponential
+smoothing (ETS) with weekly seasonality is the usual first choice for a
+series like this; the implementation cannot take regressors, so it cannot
+be told a holiday is coming. Seasonal ARIMA was added with three
+regressors, the holiday flag, a two-day run-up flag and SNAP, so that a
+classical model gets the same calendar information XGBoost gets. The ARIMA
+order is chosen once per store by AICc on its first training window and
+held for the year. A plain ARMA was rejected: without the seasonal term it
+would need very high orders to imitate a weekly cycle on daily data.
 
-## 5. Evaluating on a full year
+Every feature for a target day is computed from data available at the
+origin, and a date comparison on every fold refuses anything that reaches
+past it. Two validator checks cover leaks a date comparison would miss: a
+synthetic series with a known noise floor that no honest model can beat,
+and a shuffled target that no model should be able to learn.
 
-Every method is run through **52 walk-forward folds** of seven days, 25 May
-2015 to 22 May 2016, one full year so that every season is scored once. The
-book prescribes no fold count; its only sizing guidance is a test set of
-about 20% of the sample, which one year is. Each fold trains on all history
-before its Sunday origin and is scored on the following Monday to Sunday.
+## 6. Evaluation
 
-The score is **RMSSE**, the root mean squared error scaled by what a seasonal
-naïve forecast would have made on the training data (§5.8). A value of 1.0
-means "no better than repeating last week's same weekday"; 0.8 means 20%
-better; and because the denominator belongs to the series and not to the
-method, a 100-unit store and a 15-unit store are comparable.
+Each method is run through 52 walk-forward folds of seven days. Each fold
+trains on all history before its Sunday origin and is scored on the
+following Monday to Sunday (rolling-origin evaluation, FPP §5.10). One year
+was chosen so that every season is scored once, holidays included. The
+first version of this study scored eight spring weeks and never saw a
+holiday.
 
-**Every table is reported twice**, on ordinary weeks and on the weeks that
-touch a major holiday, because a single pooled number cannot say whether a
-method's advantage came from the fifty ordinary weeks or from the handful
-where the calendar does the work.
+The score is RMSSE (FPP §5.8): the forecast's root mean squared error
+divided by what a seasonal naïve forecast would have made on the training
+data. A value of 1.0 means no better than repeating last week's same
+weekday; 0.8 means 20% better. The denominator belongs to the series, so a
+100-unit store and a 15-unit store are comparable. Every table is reported
+on ordinary weeks and on holiday weeks separately, because a pooled number
+cannot say where a method's advantage came from.
 
-| method | all weeks | normal | holiday | bias (units/day) |
+Table 3: Mean RMSSE over 520 store-weeks. Bias is forecast minus actual in
+units per day.
+
+| method | all weeks | normal | holiday | bias |
 |---|---|---|---|---|
-| ARIMA | **0.65** | **0.63** | 0.74 | −0.1 |
-| XGBoost | 0.67 | 0.65 | **0.72** | +0.9 |
+| ARIMA | 0.65 | 0.63 | 0.74 | −0.1 |
+| XGBoost | 0.67 | 0.65 | 0.72 | +0.9 |
 | ETS | 0.67 | 0.64 | 0.80 | −0.1 |
 | moving average (28) | 0.80 | 0.78 | 0.87 | −0.1 |
 | seasonal naïve (last week) | 0.86 | 0.82 | 1.02 | −0.1 |
@@ -192,196 +209,129 @@ where the calendar does the work.
 | seasonal naïve (last year) | 1.04 | 1.03 | 1.08 | −0.1 |
 | naïve / drift | 1.10 | 1.10 | 1.10 | +9.5 |
 
-What the year says:
+Table 4: Win rate and per-week improvement in RMSSE against the reference
+benchmark and the stress check.
 
-- **The models are separable from the benchmarks, not from each other.**
-  All three beat the strongest benchmark by 0.12–0.15 and the default screen
-  by about 0.2, and beat seasonal naïve in 75–83% of store-weeks. Among
-  themselves the medians sit within 0.04: a tie on ordinary weeks, and the
-  report says so rather than crowning one.
-- **The store decides.** XGBoost leads at the three Texas stores and two of
-  three Wisconsin stores; ARIMA or ETS at every California store. At the
-  quietest store (18 a day) the 28-day mean is level with the classical
-  models and ahead of XGBoost: the learned models earn their keep where there
-  is signal to learn.
-- **The week decides too.** On ordinary weeks the classical models edge
-  XGBoost. On holiday weeks XGBoost is best at seven of ten stores and ETS
-  falls furthest. The gap between ARIMA and ETS on holiday weeks, 0.74
-  against 0.80, is the measured value of being told a holiday is coming.
-- **"This day last year" is a worse guide than "this day last week", even in
-  holiday weeks.** The level drifted, and the annual lookup carries the old
-  level with it. The orderer's holiday habit is right about the shape and
-  wrong about the size.
-- **Naïve and drift over-forecast by nine units a day** because every origin
-  is a Sunday, the busiest day, and they repeat it for the week.
+| model | vs. seasonal naïve: win / mean / median / Q1–Q3 | vs. 28-day mean: win / mean / median / Q1–Q3 |
+|---|---|---|
+| ARIMA | 82% / 20% / 24% / 10–37% | 75% / 14% / 17% / 0–34% |
+| ETS | 83% / 19% / 21% / 8–33% | 71% / 12% / 14% / −3–32% |
+| XGBoost | 75% / 16% / 23% / 0–40% | 72% / 11% / 16% / −3–33% |
 
-![RMSSE by store](figures/02_evaluate_4_rmsse_by_store.png)
+The three models beat the reference in 75 to 83% of store-weeks by a median
+of 21 to 24%, and the stress check in 71 to 75%. Their mean RMSSE is within
+0.02, which is treated as a tie on ordinary weeks. What separates them is
+the spread. XGBoost's median improvement equals ARIMA's, but its lower
+quartile is zero against the reference and negative against the moving
+average: in a quarter of weeks it does no better than the simplest thing.
+The classical models are more consistent.
 
-![Forecasts against actuals at the busiest store](figures/02_evaluate_1_forecasts_busiest_store.png)
+Which model is best depends on the store (Figure 3). XGBoost is best at the
+three Texas stores and two of the three Wisconsin stores; ARIMA or ETS at
+every California store. At the quietest store, 18 units a day, the moving
+average is level with the classical models and ahead of XGBoost.
 
-**Residuals.** The book asks that a good method's errors be centred on zero
-and uncorrelated (§5.4). Over the year at the busiest store ARIMA and ETS are
-centred (+0.4 units a day); XGBoost is not (+3.9, about 4% of the level),
-and its over-forecast recurs at three other stores while ARIMA and ETS stay
-within half a unit at nine of ten. That is XGBoost's one systematic
-weakness here, and section 6 corrects it automatically. All three show lag-1
-autocorrelation of 0.3–0.4, which is expected rather than a defect: the
-book's test is stated for one-step residuals, and these are one- to
-seven-step errors from a shared origin, correlated out to lag 6 even for a
-perfect model. What would count against a method is a spike at lag 7, and
-there is none.
+![Figure 3](figures/02_evaluate_4_rmsse_by_store.png)
 
-**Horizon.** Error rises from h = 1 to h = 7 for every method, the models
-from 0.64 to about 0.78. Read with one caveat: every origin is a Sunday, so
-day 6 is always Saturday and day 7 always Sunday, the two busiest days, and
-the plot mixes "how far ahead" with "which weekday".
+Figure 3: Mean RMSSE by store, busiest first. Coloured lines are the models;
+grey markers are the benchmarks. The line at 1.0 is seasonal naïve on the
+training data.
 
-![Error by horizon](figures/02_evaluate_2_rmsse_by_horizon.png)
+It also depends on the week. On ordinary weeks the classical models are
+slightly ahead. On holiday weeks XGBoost is best at seven of ten stores,
+with a median improvement over the reference of 31% against ARIMA's 27% and
+ETS's 21%, and ETS falls furthest. The gap between ARIMA and ETS on holiday
+weeks, 0.74 against 0.80, is what the calendar regressors are worth, since
+the two models are otherwise close. Figure 4 shows the eight weeks around
+Thanksgiving and Christmas at the busiest store, where this happens.
 
-## 6. From forecast to order
+![Figure 4](figures/02_evaluate_1b_forecasts_busiest_store_holidays.png)
 
-Everything above scores a point forecast with a symmetric error. A
-replenishment decision needs two things it does not have.
+Figure 4: Forecasts against actuals at the busiest store, 9 November 2015 to
+3 January 2016. Black is what sold. Faint vertical lines are the Sunday
+origins.
 
-**The order is a weekly total.** A Sunday order covers Monday to Sunday, so
-the error that reaches the shelf is the week's forecast total minus the
-week's actual total; daily errors partly cancel inside a week and the daily
-score never sees that they did.
+The lag-364 seasonal naïve, the holiday habit, is worse than the lag-7
+version everywhere, holiday weeks included. The level drifted over the years
+and last year's lookup carries the old level with it. Naïve and drift
+over-forecast by nine units a day because every origin is a Sunday, the
+busiest day, and they repeat it for the week.
 
-**Ordering the mean stocks out half the time.** A point forecast is the
-centre of what might happen; demand lands above it about as often as below.
-Measured on this year: ARIMA, ETS and the benchmarks under-forecast the
-weekly total in 50% of weeks, XGBoost in 44% (its bias buys six units a
-week of cover). The quantity to order is a *quantile*, the level that covers
-demand with a chosen probability τ, and which τ is an economic question, not
-a statistical one: the understock cost over the sum of both costs. Above 0.5
-when running out is the expensive mistake (ambient grocery, typically near
-0.9); below 0.5 when holding is (fresh produce that goes in the bin, near
-0.3). This item is anonymised, so its τ is unknown, and the study reports a
-range and asks whether the answer changes across it.
+## 7. Where XGBoost Loses
 
-**Where the quantiles come from.** None of the nine methods produces a
-distribution, so all nine are given one the same way (§5.5): a method's own
-weekly errors over a *calibration year* (May 2014 to May 2015) are its
-uncertainty, and its τ-quantile forecast is the point forecast plus the
-τ-quantile of those errors. A method with tighter errors earns a smaller
-add-on; a biased method is corrected automatically, because the mean error
-is inside the distribution being shifted by. The calibration year precedes
-the scored year, so no quantile is judged on the weeks it was estimated from.
+A good method's errors should be centred on zero and uncorrelated (FPP
+§5.4). Figure 5 shows the mean error per store. ARIMA and ETS sit within
+half a unit of zero at nine of ten stores. XGBoost over-forecasts by 3.9
+units a day at the busiest store, about 4% of the level, and by 2.6 to 2.7
+at three others, while under-forecasting by 3.6 at CA_2. This is not
+visible in Table 3, where XGBoost's RMSSE is competitive; it only shows in
+the bias column and in this figure. For an order it matters directly: a
+model that runs 4% high every day is a model that over-orders every week at
+that store.
 
-**The metric is pinball loss**, the book's quantile score (§5.9): a unit of
-shortfall costs 2τ, a unit of surplus 2(1 − τ). At τ = 0.9 running out is
-nine times as expensive as over-ordering. The asymmetry the decision cares
-about is inside the metric.
+![Figure 5](figures/02_evaluate_5_bias_by_store.png)
 
-Relative pinball loss (÷ mean weekly sales; lower is better; compare within
-a column, never along a row):
+Figure 5: Mean forecast minus actual per store, busiest first. XGBoost's
+markers sit above zero at seven of ten stores; the classical models' cluster
+on the line.
 
-| method | τ = 0.3 | τ = 0.5 | τ = 0.7 | τ = 0.9 | coverage at 0.9 |
-|---|---|---|---|---|---|
-| ARIMA | **0.094** | **0.106** | **0.096** | 0.053 | 0.92 |
-| XGBoost | 0.114 | 0.116 | 0.104 | **0.052** | 0.92 |
-| moving average (28) | 0.105 | 0.117 | 0.107 | 0.062 | 0.90 |
-| ETS | 0.104 | 0.120 | 0.107 | 0.059 | 0.89 |
-| seasonal naïve | 0.109 | 0.123 | 0.110 | 0.061 | 0.89 |
+The other places it loses are the quiet store, where there is too little
+signal for the trees to improve on a moving average, and the lower quartile
+of weeks generally. All three models fail the Ljung-Box test on their
+one- to seven-step errors, which is expected for multi-step forecasts from
+a shared origin; the diagnostic that would count against a method is a
+spike at lag 7, and there is none. Error rises with horizon from about 0.64
+at day 1 to about 0.78 at day 7 for all three, with the caveat that every
+origin is a Sunday, so day 7 is always Sunday and the rise mixes horizon
+with weekday.
 
-- **The ranking changes with the cost asymmetry.** At τ = 0.9, an ambient
-  item's service level, XGBoost and ARIMA tie. At τ = 0.3, a perishable's,
-  XGBoost falls to fifth, behind two benchmarks. RMSSE said nothing about
-  this and could not: a symmetric metric cannot see an asymmetric cost, and
-  which way it misleads depends on economics it has no access to.
-- **ARIMA is the most robust method** across the whole range and the best on
-  holiday weeks at every τ.
-- **The quantiles transferred.** A 0.9 order covered 89–92% of weeks for
-  every model; one year's errors described the next well enough to order
-  from. The plain mean is the exception (83%): its bias is not stable across
-  years.
-- **XGBoost's calibration transfers least well**, because its errors shrink
-  as training data grows, so last year's spread overstates this year's.
-  Letting the calibration window grow through the scored year, as a live
-  system would, recovers most of the gap (0.099 at τ = 0.3, second place).
+## 8. Testing
 
-![Quantile score and coverage by service level](figures/03_order_1_pinball_and_coverage.png)
+The validator (`python -m src.validate`) runs eight checks: closed-form
+benchmark answers on series whose correct forecast is known; every feature
+recomputed from the raw panel by date filtering and compared to the
+array-sliced implementation; per-state SNAP flags against the raw calendar;
+the holiday-proximity counts and closure flags recounted by hand; the
+quantile arithmetic used by the follow-on work; a synthetic noise floor no
+honest model can beat; a shuffled target no model should learn from; and a
+byte-identical rerun.
 
-![Weekly order-up-to levels at the busiest store](figures/03_order_2_weekly_order_band.png)
+The test suite (`python -m pytest tests`) has 82 tests. It was written by an
+independent reviewer against the finished code and found four defects, all
+fixed: the leakage assertion was defined but never called; the
+feature-matrix cache key did not include the loader version; the by-store
+table was sorted quietest-first under a "busiest first" label; and ARIMA's
+chosen orders persisted across runs in one process. None of the four changed
+a reported number, which was verified by checking the cached matrices
+against the current panel.
 
-At the busiest store, ARIMA's τ = 0.9 order sat a constant 116 units a week
-above its median forecast, and demand rose above it in one week of 52. The
-January trough is the opposite failure, a month where every method's median
-sat above what sold. Neither is a bug; both are what a service level means.
+## 9. Limitations and Future Work
 
-## 7. How this maps onto a store's ordering
+- One item, all stores smooth. The demand-class routing is a method here,
+  not a result, and is untested on an intermittent item.
+- The horizon plot is confounded with weekday. Stepping the origins by a
+  number coprime to seven would separate them.
+- The ARIMA order is fixed for the year from the first training window.
+- A point forecast is not an order. Ordering the forecast under-covers the
+  week's demand about half the time, and the right order is a quantile at a
+  service level set by the cost of running out against the cost of holding.
+  A prototype of that step exists in this repository (`order.py`, notebook
+  `03_order`) and is the subject of the follow-on work.
 
-Three facts about how ordering actually works shaped the design, and each
-has a counterpart in the results.
+Next, in order: train XGBoost directly on the quantile objective at a chosen
+service level and compare it with ARIMA and ETS given the same treatment;
+step the fold origins to fix the horizon confound; run the pooled model
+across stores; and repeat the study on an intermittent item.
 
-**The default screen is the benchmark.** An orderer's default view is this
-day last week; before a holiday, this day last year. Both are in the
-comparison as benchmarks, so "the model beats the benchmark" means "the
-model beats what a person does by default", and the holiday-week column is
-the model against the expert override. The override, it turns out, is right
-about the shape of a holiday and wrong about the level.
-
-**Deliveries are known, on-hand is inferred.** A store system typically sees
-what the warehouse shipped and what the tills sold, not a running on-hand
-count. On-hand is therefore cumulative deliveries minus cumulative sales
-minus shrink, re-anchored by a periodic physical count, and it drifts between
-counts. Two consequences for the order: it must subtract what was *shipped*,
-not what was ordered, since the warehouse can short a line and the store
-learns of it only when the truck arrives; and the safety margin has to cover
-inventory-record error as well as demand uncertainty. Orders can also be
-placed on consecutive days before the first arrives, so the cover period is
-the lead time plus the review period, not the lead time alone.
-
-**Sales are censored demand.** When the shelf is empty, sales understate
-demand, the forecast drifts low, and the next order drifts lower: a loop.
-The availability screen guards against it for this item (longest zero run
-10 days, no stocking gaps), and delivery data gives a stronger guard than
-sales alone, since implied on-hand reaching zero identifies exactly which
-days are censored. M5 has no deliveries, so the replenishment step here is a
-calculation on demand, not a simulation of a shelf, and the report says so.
-
-## 8. What is deliberately not claimed, and what comes next
-
-- **One item.** Every store is smooth, so the demand-class discussion is a
-  method, not a result, for this item. The pipeline routes an intermittent
-  item to different methods and metrics; that routing is wired and untested
-  on a real intermittent series.
-- **No inventory positions.** Receipts, on-hand and shrink are absent from
-  the data, so the order quantity is the demand side of the decision only.
-- **The service level is a range, not a number**, because the item's
-  economics are unknown. For a real product τ is set once from the margin
-  and the write-off cost, and the pinball column at that τ is the single
-  number to optimise.
-- **The ARIMA order is chosen once per store** on its first training window
-  and held for the year, by information criterion at fixed differencing
-  (§9.7). The two-year run used for the quantile section chooses on a window
-  a year earlier than the one-year run, so its ARIMA point forecasts differ
-  slightly from section 5's; every other method is identical between the two.
-- **The horizon plot is confounded with weekday**, as stated in section 5.
-- **Cold start is unsolved here.** A new product has no history to
-  calibrate from. The practical routes are pooling across stores of the same
-  item (wired but not run here), borrowing the seasonal shape and error
-  distribution of an analogous item until history accumulates, and, more
-  recently, pre-trained time-series foundation models that forecast from a
-  short history without fitting. Each is a project of its own; none is
-  claimed.
-
-The natural next steps are, in order: train XGBoost directly on the quantile
-objective at the chosen τ rather than calibrating a point forecast after the
-fact; run the pooled model across stores; and repeat the study on an
-intermittent item, where the classification would route to different tools.
-
-## Reproducing this
+## Appendix: Reproducing the Results
 
 ```
 python -m src.validate          # eight checks; must pass before any number is quoted
 python -m pytest tests          # 82 tests
-python -m src.step5_evaluate    # the point-forecast tables
-python -m src.order             # the order-quantity tables (two-year run)
+python -m src.step5_evaluate    # the tables in section 6
 python -m src.render_figures    # every figure, one folder per notebook
 ```
 
-The three notebooks (`01_explore`, `02_evaluate`, `03_order`) walk the same
-procedure with the reasoning beside each cell, and `findings/` holds the
-dated answers to their checklists for this item.
+The notebooks `01_explore` and `02_evaluate` walk the same procedure with
+the reasoning beside each cell. The dated answers to their checklists for
+this item are in `findings/`.

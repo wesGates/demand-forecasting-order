@@ -138,6 +138,18 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
     )
     save(fig, "1_forecasts_busiest_store.png")
 
+    # 1b. the same, eight weeks around Thanksgiving and Christmas, readable
+    fig, ax = plt.subplots(figsize=(11, 3.6))
+    plots.plot_forecast_folds(
+        predictions,
+        df,
+        top_id,
+        origins=origins,
+        window=("2015-11-09", "2016-01-03"),
+        ax=ax,
+    )
+    save(fig, "1b_forecasts_busiest_store_holidays.png")
+
     # 2. error by horizon (FPP §5.10)
     fig, ax = plt.subplots(figsize=(7, 3.4))
     plots.plot_rmsse_by_horizon(predictions, ax=ax)
@@ -156,6 +168,11 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
     fig, ax = plt.subplots(figsize=(10, 3.8))
     plots.plot_rmsse_by_store(scores, stats, item_id=item, ax=ax)
     save(fig, "4_rmsse_by_store.png")
+
+    # 5. bias by store - the thing RMSSE cannot show
+    fig, ax = plt.subplots(figsize=(10, 3.4))
+    plots.plot_bias_by_store(scores, stats, item_id=item, ax=ax)
+    save(fig, "5_bias_by_store.png")
 
     return written
 

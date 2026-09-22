@@ -38,10 +38,9 @@ tables from that report.
   full year, plus RMSE, MAE, bias, and win rates — every table split into
   normal and holiday weeks, so a pooled number can never hide where a win
   came from.
-- Turns the forecast into an **order quantity**: the weekly total, at a
-  chosen service level, from each method's own calibrated error quantiles
-  (FPP §5.5), scored with the quantile score (§5.9) across a range of service
-  levels — because a symmetric error cannot see an asymmetric cost.
+- Reports **win rate and per-week improvement quartiles** against the
+  orderer's default screen, so a mean improvement cannot hide a quarter of
+  weeks that got worse.
 - Refuses to report a number until a validator has passed.
 
 ## Why the safeguards are the point
@@ -65,6 +64,27 @@ two failures cannot recur:
   honest model can beat, a shuffled target no model should learn from, and
   byte-identical reruns.
 
+## When a run is recomputed, and when it is not
+
+A full run of every method costs about twenty minutes on the tiled layout
+(52 origins, 7 days apart) and about seven times that when every day is an
+origin (`Config(fold_step=1)`, the intended standard for reported numbers).
+Each method's predictions are cached separately under `cache/predictions/`,
+keyed on the config and on the code that method depends on:
+
+- **Recomputed:** that method's module in `src/models/` changes (not its
+  docstrings), the harness `step5_evaluate.py` or the shared `models/base.py`
+  changes, the feature or loader version is bumped, or a config value
+  changes.
+- **Served from cache:** everything else - plots, notebooks, tests, the
+  validator, prose, and edits to *other* methods' modules. Editing XGBoost
+  refits XGBoost only.
+- **Adopted:** a config that adds a new field at its default value reuses
+  runs made before the field existed.
+
+The cache is portable: file paths are not part of the key, so copying
+`cache/` into a fork or another machine carries the runs across.
+
 ## Layout
 
 ```
@@ -73,7 +93,8 @@ src/
   step2_data.py       load, reshape, join, pre-launch trim, parquet cache
   step3_explore.py    availability screen, ADI/CV² classification
   features.py         origin-based lags, rolling stats, calendar; leakage assertion
-  step4_models.py     six benchmarks + XGBoost + ETS + ARIMA behind one interface
+  step4_models.py     the registry: six benchmarks + XGBoost + ETS + ARIMA
+  models/             one module per forecaster (cache invalidation is per module)
   step5_evaluate.py   walk-forward harness, RMSSE, normal/holiday split, tables
   order.py            weekly totals, calibrated quantile forecasts, pinball loss
   plots.py            every figure, on one palette
@@ -116,7 +137,7 @@ python -m src.validate          # must pass before any number is quoted
 python -m pytest tests          # 82 tests pinning documented behaviour
 python -m src.render_figures    # all figures -> figures/<notebook>/
 python -m src.step5_evaluate    # the comparison, as tables
-python -m src.order             # from forecast to order quantity (two-year run)
+python -m src.order             # prototype: forecast -> order quantity (follow-on work)
 ```
 
 ## Results
@@ -157,40 +178,23 @@ What the year says that the spring slice could not:
 - XGBoost's over-forecast is smaller over the year (+0.9/day) than in the
   spring slice (+1.2), but it remains the one model with a positive bias.
 
-### From forecast to order
+### Win rate and improvement over the default screen
 
-A point forecast is not an order. Ordering the mean stocks out about half
-the weeks — measured, not assumed: the classical models under-forecast the
-weekly total in 50% of weeks, XGBoost in 44%. The order is a quantile of the
-week's demand at a chosen service level τ, and τ is an economic choice (the
-understock cost over the sum of both costs), unknown for an anonymised item,
-so it is reported as a range. Each method's quantiles come from its own
-weekly errors over a *calibration year* (May 2014 – May 2015), applied to
-the scored year — never estimated on the weeks they are judged on.
-
-Relative pinball loss (FPP §5.9's quantile score over mean weekly sales;
-lower is better; compare within a column, never along a row):
-
-| method | τ = 0.3 | τ = 0.5 | τ = 0.7 | τ = 0.9 | coverage at 0.9 |
+| model | win rate vs seasonal naïve | mean | median | Q1 | Q3 |
 |---|---|---|---|---|---|
-| ARIMA | **0.094** | **0.106** | **0.096** | 0.053 | 0.92 |
-| XGBoost | 0.114 | 0.116 | 0.104 | **0.052** | 0.92 |
-| moving average (28) | 0.105 | 0.117 | 0.107 | 0.062 | 0.90 |
-| ETS | 0.104 | 0.120 | 0.107 | 0.059 | 0.89 |
-| seasonal naïve (last week) | 0.109 | 0.123 | 0.110 | 0.061 | 0.89 |
+| ARIMA | 82% | 20% | 24% | 10% | 37% |
+| ETS | 83% | 19% | 21% | 8% | 33% |
+| XGBoost | 75% | 16% | 23% | 0% | 40% |
 
-- **The ranking does change with the cost asymmetry.** At τ = 0.9, an
-  ambient item's service level, XGBoost and ARIMA tie. At τ = 0.3, a
-  perishable's, XGBoost falls to fifth, behind two benchmarks. RMSSE said
-  nothing about this, and could not.
-- ARIMA is the most robust method across the whole range, and the best on
-  holiday weeks at every τ.
-- Coverage is close to target for every model: a 0.9 order covered 89–92% of
-  weeks. One year's errors described the next well enough to order from.
-- XGBoost's calibration transfers less well than ARIMA's: its errors shrink
-  as it gets more training data, so last year's spread overstates this
-  year's. Letting the calibration window grow through the scored year, as a
-  live system would, closes most of the gap (0.099 at τ = 0.3).
+XGBoost's median improvement equals ARIMA's, but its lower quartile is zero:
+in a quarter of weeks it does no better than the default screen. It also
+over-forecasts by about 4% at the busiest store, which the bias column shows
+and the error score does not.
+
+A point forecast is not an order. A prototype of the next step, turning the
+forecast into a quantile order at a service level and scoring it with the
+quantile score, is in `src/order.py` and notebook `03_order`; it is the
+subject of the follow-on work and is not part of this report.
 
 ## What is deliberately not claimed
 

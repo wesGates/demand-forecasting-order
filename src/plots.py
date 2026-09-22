@@ -968,10 +968,22 @@ def plot_forecast_folds(
     origins=None,
     methods=None,
     lead_in: int = 28,
+    window: tuple | None = None,
+    horizon: int | None = None,
     ax: plt.Axes | None = None,
 ) -> plt.Axes:
     """
     Each method's forecasts drawn over the actual sales, across every fold.
+
+    `window` = (start, end) restricts the drawing to a span of dates. A full
+    year of daily forecasts is too dense to read; eight weeks around the
+    holidays is where the methods actually separate.
+
+    `horizon` picks which forecast to draw for each day when folds overlap
+    (a fold step shorter than the window gives every day one forecast per
+    horizon). None means: all of them when folds tile, and h = 1 when they
+    overlap - the one-day-ahead line, which is the forecast an order placed
+    the day before would have used.
 
     This is FPP §5.8's figure - competing forecasts on the same axes as what
     happened, with the test period visible. The book's own verdict on its
@@ -989,6 +1001,19 @@ def plot_forecast_folds(
     """
     ax = ax or plt.gca()
     p = predictions[predictions["id"] == series_id]
+    if window is not None:
+        lo, hi = pd.Timestamp(window[0]), pd.Timestamp(window[1])
+        p = p[(p["target_date"] >= lo) & (p["target_date"] <= hi)]
+        lead_in = 0
+        if origins is not None:
+            origins = [o for o in origins if lo <= o <= hi]
+    overlapping = _folds_overlap(p)
+    if horizon is None and overlapping:
+        horizon = 1
+    if horizon is not None:
+        p = p[p["horizon"] == horizon]
+        if overlapping:
+            origins = None  # one line per day; daily origin lines would be noise
     methods = _present(p, methods)
     start, end = p["target_date"].min(), p["target_date"].max()
 
@@ -1010,13 +1035,23 @@ def plot_forecast_folds(
         ax.axvline(holdout_start, color=AXIS, lw=1.2, zorder=1)
 
     ax.set_ylabel("units/day")
-    ax.set_title(
-        f"{series_id.split('_evaluation')[0]} — forecasts against actuals, every fold"
-    )
+    span = "every fold" if window is None else f"{start:%d %b %Y} to {end:%d %b %Y}"
+    what = f"{horizon}-day-ahead forecasts" if horizon is not None else "forecasts"
+    ax.set_title(f"{series_id.split('_evaluation')[0]} — {what} against actuals, {span}")
     ax.margins(x=0.01)
+    if window is not None:
+        ax.set_xlim(start - pd.Timedelta(days=1), end + pd.Timedelta(days=1))
     _date_axis(ax, start, end)
     legend_below(ax, ncols=len(methods) + 1)
     return ax
+
+
+def _folds_overlap(predictions: pd.DataFrame) -> bool:
+    """True when some day carries more than one forecast per method (fold step < window)."""
+    if predictions.empty:
+        return False
+    one = predictions[predictions["method"] == predictions["method"].iloc[0]]
+    return bool(one["target_date"].duplicated().any())
 
 
 def _date_axis(ax: plt.Axes, start: pd.Timestamp, end: pd.Timestamp) -> None:
@@ -1150,6 +1185,51 @@ def plot_rmsse_by_store(
     return ax
 
 
+def plot_bias_by_store(
+    scores: pd.DataFrame,
+    stats: pd.DataFrame,
+    item_id: str | None = None,
+    methods=("xgboost", "ets", "arima"),
+    ax: plt.Axes | None = None,
+) -> plt.Axes:
+    """
+    Mean bias (forecast minus actual, units per day) per store, one marker per
+    model, busiest store first. Zero is the line to sit on. A method whose
+    markers sit on one side of it at most stores has a systematic
+    over- or under-forecast that a symmetric error score will not show.
+    """
+    ax = ax or plt.gca()
+    if item_id is not None:
+        stats = stats[stats["item_id"] == item_id]
+        scores = scores[scores["item_id"] == item_id]
+    order = stats.sort_values("mean_sales", ascending=False)["store_id"].tolist()
+    table = scores.pivot_table(
+        index="store_id", columns="method", values="bias", aggfunc="mean"
+    ).reindex(order)
+    kinds = scores.drop_duplicates("method").set_index("method")["kind"]
+    x = np.arange(len(order))
+    ax.axhline(0, color=AXIS, lw=1.0, zorder=1)
+    for name in methods:
+        if name not in table:
+            continue
+        style = _method_style(name, kinds[name])
+        ax.plot(
+            x,
+            table[name].to_numpy(),
+            marker="o",
+            ms=6,
+            lw=0,
+            label=name,
+            **{k: v for k, v in style.items() if k != "lw"},
+        )
+    ax.set_xticks(x, order)
+    ax.set_ylabel("mean forecast − actual, units/day")
+    ax.set_title("Bias by store, busiest first  (above zero = over-forecast)")
+    ax.grid(axis="x", visible=False)
+    legend_below(ax, ncols=len(methods))
+    return ax
+
+
 def plot_residual_diagnostics(
     predictions: pd.DataFrame,
     series_id: str,
@@ -1191,14 +1271,21 @@ def plot_residual_diagnostics(
         _, axes = plt.subplots(1, 3, figsize=(13, 3.2))
     predictions = _drop_closures(predictions)
     p = predictions[(predictions["id"] == series_id) & (predictions["method"] == method)]
+    # With overlapping folds every day has one residual per horizon. Use the
+    # one-step-ahead residuals: that is what FPP's diagnostics are stated for,
+    # and then the Ljung-Box verdict is a real one.
+    one_step = _folds_overlap(p)
+    if one_step:
+        p = p[p["horizon"] == 1]
     p = p.sort_values("target_date")
     r = (p["forecast"] - p["actual"]).to_numpy(dtype=float)
     n = len(r)
+    label = "one-step residuals" if one_step else "residuals"
 
     # --- time plot ------------------------------------------------------
     axes[0].plot(p["target_date"], r, color=SERIES_1, lw=0.9)
     axes[0].axhline(0, color=AXIS, lw=1.0)
-    axes[0].set_title(f"residuals over time  (mean {r.mean():+.2f})")
+    axes[0].set_title(f"{label} over time  (mean {r.mean():+.2f})")
     axes[0].set_ylabel("forecast − actual")
     _date_axis(axes[0], p["target_date"].min(), p["target_date"].max())
 

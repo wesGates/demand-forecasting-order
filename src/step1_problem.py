@@ -79,18 +79,29 @@ class Config:
     # How we validate
     # ======================================================================
 
-    # Number of consecutive walk-forward folds - FPP calls this "time series
-    # cross-validation" with a rolling forecasting origin (§5.10). Each fold
-    # steps one `test_window` further back. More folds recover sample size
-    # without ever lengthening the scored window.
-    #
-    # FPP prescribes no count (§5.10's own example uses every origin). The only
-    # sizing guidance is §5.8's: a test set of roughly 20% of the sample, and
-    # at least as long as the horizon. 52 weekly folds is one full year - about
-    # 20% of the five-year history - and, more to the point, the only layout
-    # that scores every season once: the holiday run-up, the January trough
-    # and the ordinary weeks between. 8 folds scored a single spring slice.
+    # Number of walk-forward folds - "time series cross-validation" with a
+    # rolling forecasting origin (FPP §5.10). One origin per fold; the origins
+    # are `fold_step` days apart. 52 folds of 7 days is one full year, about
+    # 20% of the five-year history, and the shortest layout that scores every
+    # season once. 8 folds scored a single spring slice.
     n_folds: int = 52
+
+    # Days between consecutive fold origins.
+    #   7  - origins tile the held-out year with no overlap. Every origin is
+    #        the same weekday (a Sunday here), so h = 1 is always Monday and
+    #        h = 7 always Sunday: the horizon plot mixes horizon with weekday,
+    #        and every claim is a Sunday-order claim.
+    #   1  - every day is an origin, as FPP's own example does. Origins rotate
+    #        through the week, so the scoreboard averages over all order days
+    #        and the horizon plot is clean. Windows overlap: each day is
+    #        scored once per horizon, so adjacent folds share six of their
+    #        seven days and 364 folds are not 364 independent samples. Seven
+    #        times the fitting cost (about 1 h 45 min for all methods).
+    #   8  - a cheap compromise: origins still rotate through the week, with
+    #        one-day gaps between scored windows.
+    # The step-1 layout is the intended standard for reported numbers; 7 is
+    # kept for quick checks while iterating.
+    fold_step: int = 7
 
     # A series must have at least this many days of history at a fold's origin
     # or that fold is skipped for it. 365 keeps one full annual cycle in view.
@@ -197,6 +208,8 @@ class Config:
             )
         if self.horizon < 1 or self.n_folds < 1:
             raise ValueError("horizon and n_folds must both be >= 1.")
+        if self.fold_step < 1:
+            raise ValueError("fold_step must be >= 1 day.")
         if self.rmsse_scale_lag < 1:
             raise ValueError("rmsse_scale_lag must be >= 1.")
 
@@ -236,9 +249,9 @@ class Config:
         """
         The first date that will ever be scored, given this fold layout.
 
-        Walk-forward folds step backwards from the end of the data in
-        `test_window` chunks, so the earliest scored day sits
-        `n_folds * test_window` days from the end.
+        The last fold ends on the final day of data; earlier folds step back
+        `fold_step` days at a time, so the earliest scored day sits
+        `(n_folds - 1) * fold_step + test_window` days from the end.
 
         **This is the single source of truth for that boundary.** Step 3 uses it
         to make sure no class label is computed from a scored day, and step 5
@@ -251,24 +264,24 @@ class Config:
         """
         The forecast origin for every walk-forward fold, earliest first.
 
-        Fold k scores the `test_window` days beginning `k` windows after
-        `holdout_start`, and its origin is the day before the first of those.
-        Together the folds tile the held-out period exactly - no gaps, no
-        overlap, and the last fold ends on the final day of data.
+        Fold k scores the `test_window` days beginning `k * fold_step` days
+        after `holdout_start`, and its origin is the day before the first of
+        those. With `fold_step == test_window` the folds tile the held-out
+        period exactly; with a smaller step they overlap; with a larger one
+        there are gaps. The last fold always ends on the final day of data.
 
         Shares `holdout_start` with step 3's classification cutoff, so the two
         cannot drift apart.
         """
         start = self.holdout_start(last_date)
         return [
-            start + pd.Timedelta(days=k * self.test_window - 1)
-            for k in range(self.n_folds)
+            start + pd.Timedelta(days=k * self.fold_step - 1) for k in range(self.n_folds)
         ]
 
     @property
     def test_days_total(self) -> int:
-        """Total days scored per series across all folds."""
-        return self.n_folds * self.test_window
+        """Days from the first scored day to the last, inclusive."""
+        return (self.n_folds - 1) * self.fold_step + self.test_window
 
     def describe(self) -> str:
         """Human-readable summary, for the top of a notebook."""
@@ -283,7 +296,7 @@ class Config:
         return (
             f"Forecast daily unit sales, h=1..{self.horizon} from origin T.\n"
             f"  subset      : {where}\n"
-            f"  validation  : {self.n_folds} walk-forward folds "
+            f"  validation  : {self.n_folds} walk-forward folds, origins {self.fold_step} day(s) apart, "
             f"x {self.test_window}-day window ({self.test_days_total} days scored)\n"
             f"  training    : {scope}, min {self.min_train_days} days, "
             f"price {'on' if self.use_price else 'off'}\n"
