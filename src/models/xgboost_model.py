@@ -24,20 +24,17 @@ XGB_PARAMS = dict(
 )
 
 
-def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
+def design(ctx: Context):
     """
-    Gradient-boosted trees on the supervised matrix.
+    The training and prediction matrices for one fold, plus the inner
+    early-stopping split. Shared by the point model and the quantile model
+    so the two differ in their objective and nothing else.
 
-    Identical code for both the per-series and the pooled variant - the only
-    difference is how many stores' rows arrived in `ctx.train_pool`, and whether
-    store identity is offered as a feature. Isolating the comparison to that one
-    difference is the point.
-
-    Predictions are clipped at zero: demand cannot be negative, and a tree
-    ensemble extrapolating below the data would otherwise happily go there.
+    Returns (x_train, y_train, x_pred, inner_fit) or None when there is
+    nothing to train or predict. `inner_fit` is a boolean array over the
+    training rows: True for rows used to fit, False for the chronological
+    tail held out to decide when to stop adding trees.
     """
-    from xgboost import XGBRegressor
-
     pool = ctx.train_pool
     if pool is None or pool.empty:
         raise ValueError("xgboost needs a train_pool")
@@ -56,7 +53,7 @@ def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
     predict = pool[(pool["origin_date"] == ctx.origin) & (pool["id"] == ctx.series_id)]
 
     if train.empty or predict.empty:
-        return np.full(ctx.horizon, np.nan)
+        return None
     if (train["target_date"] > ctx.origin).any():
         raise ValueError("LEAK: training rows carry targets from after the origin.")
 
@@ -71,8 +68,6 @@ def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
             x_train[col] = x_train[col].astype(cats)
             x_pred[col] = x_pred[col].astype(cats)
 
-    params = {**XGB_PARAMS, **overrides, "random_state": ctx.seed}
-
     # Early stopping on a chronological tail of the training data. Without it
     # the tree count is a guess: measured on this data, a fixed 400 trees fits
     # roughly three times more model than the data supports, and the extra is
@@ -82,10 +77,31 @@ def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
     # sit *after* the rows used to fit, or stopping is decided by a model that
     # has already seen the period it is being judged on.
     cut = ctx.origin - pd.Timedelta(days=INNER_VAL_DAYS)
-    inner_fit = train["target_date"] <= cut
-    inner_val = ~inner_fit
+    inner_fit = (train["target_date"] <= cut).to_numpy()
+    return x_train, train["target"].to_numpy(dtype=float), x_pred, inner_fit
 
-    if inner_fit.sum() and inner_val.sum():
+
+def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
+    """
+    Gradient-boosted trees on the supervised matrix.
+
+    Identical code for both the per-series and the pooled variant - the only
+    difference is how many stores' rows arrived in `ctx.train_pool`, and whether
+    store identity is offered as a feature. Isolating the comparison to that one
+    difference is the point.
+
+    Predictions are clipped at zero: demand cannot be negative, and a tree
+    ensemble extrapolating below the data would otherwise happily go there.
+    """
+    from xgboost import XGBRegressor
+
+    parts = design(ctx)
+    if parts is None:
+        return np.full(ctx.horizon, np.nan)
+    x_train, y_train, x_pred, inner_fit = parts
+    params = {**XGB_PARAMS, **overrides, "random_state": ctx.seed}
+
+    if inner_fit.sum() and (~inner_fit).sum():
         model = XGBRegressor(
             **params,
             enable_categorical=True,
@@ -93,15 +109,15 @@ def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
             eval_metric="rmse",
         )
         model.fit(
-            x_train[inner_fit.to_numpy()],
-            train.loc[inner_fit, "target"],
-            eval_set=[(x_train[inner_val.to_numpy()], train.loc[inner_val, "target"])],
+            x_train[inner_fit],
+            y_train[inner_fit],
+            eval_set=[(x_train[~inner_fit], y_train[~inner_fit])],
             verbose=False,
         )
     else:
         # Too little history to hold anything back - fall back to a fixed,
         # deliberately modest tree count rather than the 2000 upper bound.
         model = XGBRegressor(**{**params, "n_estimators": 150}, enable_categorical=True)
-        model.fit(x_train, train["target"])
+        model.fit(x_train, y_train)
 
     return np.clip(model.predict(x_pred), 0, None)

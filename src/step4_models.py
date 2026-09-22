@@ -44,7 +44,7 @@ cross-learning question to a single variable.
 
 from __future__ import annotations
 
-from src.models import arima_model, benchmarks, ets_model, xgboost_model
+from src.models import arima_model, benchmarks, ets_model, xgboost_model, xgboost_quantile
 from src.models.arima_model import (
     _arima_exog,
     _select_arima_order,
@@ -60,6 +60,7 @@ MODELS: dict[str, Forecaster] = {
     "xgboost": fit_predict_xgboost,
     "ets": fit_predict_ets,
     "arima": fit_predict_arima,
+    **xgboost_quantile.QUANTILE_MODELS,
 }
 
 # Everything that produces a forecast, benchmarks and models alike.
@@ -73,7 +74,19 @@ MODULE_OF = {
     "xgboost": xgboost_model,
     "ets": ets_model,
     "arima": arima_model,
+    **{name: xgboost_quantile for name in xgboost_quantile.QUANTILE_MODELS},
 }
+
+
+def reset_run_state() -> None:
+    """
+    Forget everything memoised within a run: ARIMA's chosen orders and the
+    quantile model's per-fold fits. The harness calls this at the start of
+    every run so a second layout in the same process starts clean.
+    """
+    arima_orders.clear()
+    xgboost_quantile.reset()
+
 
 __all__ = [
     "ALL_FORECASTERS",
@@ -88,6 +101,7 @@ __all__ = [
     "_flat",
     "_select_arima_order",
     "arima_orders",
+    "reset_run_state",
     "fit_predict_arima",
     "fit_predict_ets",
     "fit_predict_xgboost",

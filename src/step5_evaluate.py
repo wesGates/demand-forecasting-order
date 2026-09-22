@@ -67,7 +67,7 @@ from tqdm import tqdm
 from src import step2_data
 from src.features import FEATURE_VERSION, build_supervised, holiday_window
 from src.step1_problem import Config
-from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, arima_orders
+from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, reset_run_state
 
 # --------------------------------------------------------------------------- #
 # Supervised matrices, cached
@@ -321,11 +321,11 @@ def run_walk_forward(
     if not to_run:
         return _ordered(cached, methods)
 
-    # ARIMA memoises its chosen order per series on the first fold it sees.
-    # That must mean the first fold of *this* run: a second run in the same
-    # process with a different fold layout would otherwise inherit an order
-    # chosen on a window that may reach into its own scored period.
-    arima_orders.clear()
+    # ARIMA memoises its chosen order per series on the first fold it sees,
+    # and the quantile model memoises its fit per fold. Both must belong to
+    # *this* run: a second layout in the same process would otherwise inherit
+    # state from a window that may reach into its own scored period.
+    reset_run_state()
 
     last_date = df["date"].max()
     origins = cfg.fold_origins(last_date)
