@@ -6,8 +6,8 @@ Every number below comes from these runs. The branch and commit name the code; t
 
 **run**
 ```
-branch: item4-intermittent
-commit: 391ff3f (working tree has uncommitted changes)
+branch: item2-fold-step-1 (run made with the code of main at 0ef4642; findings committed at 0ba2905)
+commit: 0ef4642
 config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_3_586',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by=None, rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
 cache files:
   mean: mean_7af186ba56d9.parquet

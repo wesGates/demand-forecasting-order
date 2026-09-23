@@ -6,8 +6,8 @@ Every number below comes from these runs. The branch and commit name the code; t
 
 **pooled run**
 ```
-branch: item4-intermittent
-commit: 391ff3f (working tree has uncommitted changes)
+branch: item3-pooling (pooled run made at 76067bf, the per-origin memo; findings committed at d9cbfea)
+commit: 76067bf
 config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_3_586',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by='item_id', rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
 cache files:
   xgboost: xgboost_ce1fa90ffef3.parquet
@@ -15,8 +15,8 @@ cache files:
 
 **per-store comparators**
 ```
-branch: item4-intermittent
-commit: 391ff3f (working tree has uncommitted changes)
+branch: item3-pooling (pooled run made at 76067bf, the per-origin memo; findings committed at d9cbfea)
+commit: 76067bf
 config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_3_586',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by=None, rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
 cache files:
   mean: mean_7af186ba56d9.parquet

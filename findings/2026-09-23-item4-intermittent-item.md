@@ -6,8 +6,8 @@ Every number below comes from these runs. The branch and commit name the code; t
 
 **per-store run**
 ```
-branch: item4-intermittent
-commit: 391ff3f (working tree has uncommitted changes)
+branch: item4-intermittent (per-store run made with the code of main at 0ef4642; pooled run at 22afec1; findings committed at 391ff3f)
+commit: 391ff3f
 config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_1_021',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by=None, rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
 cache files:
   mean: mean_053cde422719.parquet
@@ -23,8 +23,8 @@ cache files:
 
 **pooled run**
 ```
-branch: item4-intermittent
-commit: 391ff3f (working tree has uncommitted changes)
+branch: item4-intermittent (per-store run made with the code of main at 0ef4642; pooled run at 22afec1; findings committed at 391ff3f)
+commit: 391ff3f
 config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_1_021',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by='item_id', rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
 cache files:
   xgboost: xgboost_4d724e78629a.parquet

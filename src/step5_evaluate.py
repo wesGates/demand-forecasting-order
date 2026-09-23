@@ -429,6 +429,11 @@ def provenance(cfg: Config, methods: list[str] | None = None) -> str:
     the branch, commit, config and cache files that produced it. Anyone can
     check out the commit, rebuild the config from the line printed here, and
     either read the same cache file or recompute and compare.
+
+    Call it in the same checkout and at the same time as the run, or the
+    branch and commit lines describe where the block was written rather
+    than where the predictions were made. Stamping a file later means
+    writing those two lines by hand from the run's history.
     """
     import subprocess
 
