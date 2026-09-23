@@ -84,6 +84,27 @@ Fourier/STL item below.
   a model on the seasonally adjusted series. Worth evaluating once the four
   items above are done, since the annual shape is where the classical
   models could gain against XGBoost, which already sees day of year.
+- **A run registry, so every change is measured against the last one.**
+  An append-only table, one row per cached run: run id (the cache
+  digest), method, config fields, code digest, branch, commit, time,
+  run time, and the headline scores on a fixed benchmark suite (`DEV`,
+  weekly, every-day; later a class-stratified item set). A comparison
+  script reports a change against its predecessor paired by store and
+  origin (win rate and improvement quartiles, as the reports already do),
+  so a difference inside the fold-to-fold noise is not read as progress.
+  File-based first (parquet); the same schema becomes the SQL `run` table.
+- **Faster iteration.** A parallel harness over stores and origins
+  (processes, one XGBoost thread each; one writer per cache file; pooled
+  fits memoised per origin; ARIMA orders chosen once and shared). Every
+  full run from hours to minutes on this machine.
+- **Intermittent demand, properly.** A class-stratified item sample,
+  Croston and TSB as registered methods, results by class, and the deep
+  learning models FPP covers, compared on the same folds.
+- **New items (zero-shot / cold start).** Needs its own evaluation design:
+  the harness requires a year of history (`min_train_days`), so new items
+  are scored on items launched inside the test period, against simple
+  fallbacks (category or store averages) and pretrained forecasting models
+  that need no history of the item.
 - **SQL Server as the results store** (designed 2026-09-23, not built).
   SQL Server in a Docker container as source and sink for the pipeline,
   in new files only, so no cached run is invalidated:
