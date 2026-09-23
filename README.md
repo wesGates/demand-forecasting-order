@@ -98,7 +98,7 @@ src/
   plots.py            every figure, on one palette
   validate.py         the gate
   render_figures.py   regenerate all figures to figures/<notebook>/
-tests/                pytest suite: benchmarks, features, harness, models, ordering
+tests/                pytest suite: benchmarks, features, harness, models
 notebooks/
   01_explore.py       FPP step 3 — graph the data before modelling anything
   02_evaluate.py      FPP step 5 — run the comparison, read the diagnostics

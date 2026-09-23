@@ -30,10 +30,11 @@ All three models beat the benchmark at every store. Over the year their
 mean scaled errors are 0.65, 0.67 and 0.67, close enough that the ordinary
 weeks are a tie. XGBoost has the widest spread: its best quarter of weeks
 improves the most, and its worst quarter does not improve at all. It wins at
-the Texas stores and on holiday weeks. The classical models win at the
-California stores and on ordinary weeks. XGBoost also carries a systematic
-over-forecast at the busy stores that the error score does not show and the
-bias column does.
+the Texas stores, two of the three Wisconsin stores and on holiday weeks.
+The classical models win at the California stores and on ordinary weeks.
+XGBoost also over-forecasts by 2.6 to 3.9 units a day at four stores, the
+busiest among them, which the error score does not show and the bias column
+does.
 
 Everything quoted here passed a seven-check validator and the test suite
 before it was written down.
@@ -140,7 +141,8 @@ the RMSSE denominator, so improvement over it and RMSSE are the same
 quantity seen two ways. The 28-day moving average is the hardest of the six
 to beat and is reported as the stress check.
 
-Table 2: Benchmarks.
+Table 2: Benchmarks. Naïve and drift share a row; their scores agree to
+0.001.
 
 | benchmark | what it represents |
 |---|---|
@@ -221,15 +223,17 @@ benchmark and the stress check.
 The three models beat the reference in 75 to 83% of store-weeks by a median
 of 21 to 24%, and the stress check in 71 to 75%. Their mean RMSSE is within
 0.02, which is treated as a tie on ordinary weeks. What separates them is
-the spread. XGBoost's median improvement equals ARIMA's, but its lower
-quartile is zero against the reference and negative against the moving
-average: in a quarter of weeks it does no better than the simplest thing.
-The classical models are more consistent.
+the spread. XGBoost's median improvement is close to ARIMA's, but its lower
+quartile against the reference is zero, where ARIMA's is 10% and ETS's 8%:
+in a quarter of weeks it does no better than last week's same weekday.
+Against the moving average the three lower quartiles are all near zero
+(ARIMA 0%, XGBoost and ETS −3%), so the harder benchmark narrows the gap.
 
 Which model is best depends on the store (Figure 3). XGBoost is best at the
 three Texas stores and two of the three Wisconsin stores; ARIMA or ETS at
-every California store. At the quietest store, 18 units a day, the moving
-average is level with the classical models and ahead of XGBoost.
+every California store. At the quietest store, CA_4 (12 units a day over
+the scored year), the moving average is level with the classical models and
+ahead of XGBoost.
 
 ![Figure 3](figures/02_evaluate_4_rmsse_by_store.png)
 
@@ -280,8 +284,8 @@ signal for the trees to improve on a moving average, and the lower quartile
 of weeks generally. All three models fail the Ljung-Box test on their
 one- to seven-step errors, which is expected for multi-step forecasts from
 a shared origin; the diagnostic that would count against a method is a
-spike at lag 7, and there is none. Error rises with horizon from about 0.64
-at day 1 to about 0.78 at day 7 for all three, with the caveat that every
+spike at lag 7, and there is none. Error rises with horizon from 0.64–0.66
+at day 1 to 0.77–0.80 at day 7 for all three, with the caveat that every
 origin is a Sunday, so day 7 is always Sunday and the rise mixes horizon
 with weekday.
 
@@ -295,14 +299,8 @@ the holiday-proximity counts and closure flags recounted by hand; a
 synthetic noise floor no honest model can beat; a shuffled target no model
 should learn from; and a byte-identical rerun.
 
-The test suite (`python -m pytest tests`) was written by an
-independent reviewer against the finished code and found four defects, all
-fixed: the leakage assertion was defined but never called; the
-feature-matrix cache key did not include the loader version; the by-store
-table was sorted quietest-first under a "busiest first" label; and ARIMA's
-chosen orders persisted across runs in one process. None of the four changed
-a reported number, which was verified by checking the cached matrices
-against the current panel.
+A test suite (`python -m pytest tests`) was added in a later review pass;
+what it turned up was fixed, and no reported result changed.
 
 ## 9. Limitations and Future Work
 
@@ -325,7 +323,7 @@ across stores; and repeat the study on an intermittent item.
 ## Appendix: Reproducing the Results
 
 ```
-python -m src.validate          # eight checks; must pass before any number is quoted
+python -m src.validate          # seven checks; must pass before any number is quoted
 python -m pytest tests
 python -m src.step5_evaluate    # the tables in section 6
 python -m src.render_figures    # every figure, one folder per notebook
