@@ -1,5 +1,35 @@
 # Item 4 — an intermittent, declining item
 
+## Provenance
+
+Every number below comes from these runs. The branch and commit name the code; the config line rebuilds the run; the cache files hold the predictions, each with a sidecar recording the config and code digest it was made under.
+
+**per-store run**
+```
+branch: item4-intermittent
+commit: 391ff3f (working tree has uncommitted changes)
+config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_1_021',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by=None, rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
+cache files:
+  mean: mean_053cde422719.parquet
+  naive: naive_a885bc599512.parquet
+  seasonal_naive: seasonal_naive_4ca182af4267.parquet
+  seasonal_naive_364: seasonal_naive_364_6f78c782fe4b.parquet
+  drift: drift_6898c99decf7.parquet
+  moving_average_28: moving_average_28_7b9eb34bcfda.parquet
+  xgboost: xgboost_52b5d521ded9.parquet
+  ets: ets_41074048d94c.parquet
+  arima: arima_3466473e044b.parquet
+```
+
+**pooled run**
+```
+branch: item4-intermittent
+commit: 391ff3f (working tree has uncommitted changes)
+config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_1_021',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by='item_id', rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
+cache files:
+  xgboost: xgboost_4d724e78629a.parquet
+```
+
 Dated 2026-09-23. `FOODS_1_021`, ten stores, every-day layout (358 origins,
 3,580 store-origins per method). Chosen by the classification, not by hand:
 of 216 items in one department, one of two whose ten stores span three

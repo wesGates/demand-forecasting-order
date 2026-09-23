@@ -3,7 +3,7 @@ The validator. Run it before trusting any number this project produces.
 
     python -m src.validate
 
-Eight checks in seven groups, each aimed at a different way of being wrong. What
+Nine checks in seven groups, each aimed at a different way of being wrong. What
 they have in common is the only thing that matters: **every bug they catch
 still produces plausible-looking output.** A result that is obviously broken
 gets fixed the moment you see it; a result that is quietly wrong ends up in a
@@ -61,7 +61,7 @@ from src.step2_data import (
     SNAP_BY_STATE,
     load_panel,
 )
-from src.step4_models import BENCHMARKS, Context, fit_predict_xgboost
+from src.step4_models import BENCHMARKS, Context, fit_predict_xgboost, reset_run_state
 
 TOL = 1e-9
 
@@ -153,9 +153,22 @@ def _walk_forward_rmse(panel: pd.DataFrame, cfg: Config) -> tuple[float, float, 
     origins = cfg.fold_origins(panel["date"].max())
     model_err, bench_err, n = [], [], 0
 
+    # Honour the pooling setting: with `pool_by` every series in the pool
+    # trains on all of their rows, exactly as the harness does.
+    matrices = {
+        sid: build_supervised(s.sort_values("date").reset_index(drop=True), cfg.horizon)
+        for sid, s in panel.groupby("id", sort=True, observed=True)
+    }
+    reset_run_state()
+
     for sid, series in panel.groupby("id", sort=True, observed=True):
         series = series.sort_values("date").reset_index(drop=True)
-        pool = build_supervised(series, cfg.horizon)
+        if cfg.pool_by is None:
+            pool = matrices[sid]
+        else:
+            key = series[cfg.pool_by].iloc[0]
+            members = panel.loc[panel[cfg.pool_by] == key, "id"].unique()
+            pool = pd.concat([matrices[m] for m in members], ignore_index=True)
 
         for origin in origins:
             history = series[series["date"] <= origin]
@@ -175,6 +188,7 @@ def _walk_forward_rmse(panel: pd.DataFrame, cfg: Config) -> tuple[float, float, 
                 series_id=sid,
                 season=cfg.season,
                 train_pool=pool,
+                pool_by=cfg.pool_by,
                 seed=cfg.seed,
             )
             pred = fit_predict_xgboost(ctx)
@@ -338,6 +352,48 @@ def check_features_hand_computed(cfg: Config | None = None) -> dict:
 # --------------------------------------------------------------------------- #
 # 3. Noise floor and shuffled target
 # --------------------------------------------------------------------------- #
+
+
+def check_layouts_and_pooling(noise_sd: float = 2.0, seed: int = 7) -> dict:
+    """
+    The noise-floor and shuffled-target nets, repeated under the two
+    settings the default checks do not exercise: every day an origin
+    (`fold_step=1`, overlapping windows) and one model pooled across the
+    series. A leak that only opens when windows overlap, or when other
+    series' rows sit in the training pool, would show here and nowhere else.
+    """
+    panel = _synthetic_panel(n_series=6, n_days=1000, noise_sd=noise_sd)
+    rng = np.random.default_rng(seed)
+    shuffled = panel.copy()
+    shuffled["sales"] = rng.permutation(shuffled["sales"].to_numpy())
+    layouts = {
+        "every-day origins": Config(n_folds=30, fold_step=1, min_train_days=200),
+        "pooled": Config(n_folds=10, min_train_days=200, pool_by="item_id"),
+    }
+    failures, detail = [], {}
+    for name, cfg in layouts.items():
+        floor_model, _, n = _walk_forward_rmse(panel, cfg)
+        model, bench, _ = _walk_forward_rmse(shuffled, cfg)
+        detail[name] = {
+            "noise_floor_ratio": round(floor_model / noise_sd, 3),
+            "shuffled_ratio": round(model / bench, 3),
+            "folds": n,
+        }
+        if floor_model < noise_sd:
+            failures.append(
+                f"{name}: beat the noise floor ({floor_model:.3f} < {noise_sd})"
+            )
+        if model / bench < 0.97:
+            failures.append(
+                f"{name}: learned from a shuffled target (ratio {model / bench:.3f})"
+            )
+    return {
+        "check": "layouts and pooling",
+        "tested": "noise floor and shuffled target under fold_step=1 and pool_by",
+        **detail,
+        "failures": failures,
+        "verdict": "ok" if not failures else "FAILED",
+    }
 
 
 def check_noise_floor(noise_sd: float = 2.0) -> dict:
@@ -647,6 +703,7 @@ def run_all() -> bool:
         check_determinism,
         check_noise_floor,
         check_shuffled_target,
+        check_layouts_and_pooling,
     ]
 
     ok = True

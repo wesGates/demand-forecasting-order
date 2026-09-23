@@ -66,7 +66,7 @@ from tqdm import tqdm
 
 from src import step2_data
 from src.features import FEATURE_VERSION, build_supervised, holiday_window
-from src.step1_problem import Config
+from src.step1_problem import PROJECT_ROOT, Config
 from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, reset_run_state
 
 # --------------------------------------------------------------------------- #
@@ -189,13 +189,18 @@ def _method_code(method: str) -> str:
     the module that method lives in. Editing one model's module changes only
     that method's digest, so the others' cached predictions stay valid.
     """
-    from src import step4_models
+    from src import features, step4_models
     from src.models import base
 
+    # The feature and loader modules are hashed too, not only their manual
+    # version numbers: an edit to either changes what a model trains on, and
+    # a forgotten version bump must not serve a stale run.
     parts = [
         _code_digest(Path(__file__)),
         _code_digest(Path(base.__file__)),
         _code_digest(Path(step4_models.MODULE_OF[method].__file__)),
+        _code_digest(Path(features.__file__)),
+        _code_digest(Path(step2_data.__file__)),
         str(FEATURE_VERSION),
         str(step2_data.CACHE_VERSION),
     ]
@@ -416,6 +421,42 @@ def run_walk_forward(
         if use_cache:
             _write_cached(cfg, name, part)
     return _ordered(cached, methods)
+
+
+def provenance(cfg: Config, methods: list[str] | None = None) -> str:
+    """
+    A block for the top of a findings file that ties every number in it to
+    the branch, commit, config and cache files that produced it. Anyone can
+    check out the commit, rebuild the config from the line printed here, and
+    either read the same cache file or recompute and compare.
+    """
+    import subprocess
+
+    def git(*args):
+        try:
+            return subprocess.check_output(
+                ["git", *args], text=True, cwd=PROJECT_ROOT
+            ).strip()
+        except Exception:  # not a git checkout
+            return "?"
+
+    methods = list(methods or ALL_FORECASTERS)
+    fields = ", ".join(f"{k}={v}" for k, v in _config_fields(cfg).items())
+    lines = [
+        f"branch: {git('rev-parse', '--abbrev-ref', 'HEAD')}",
+        f"commit: {git('rev-parse', '--short', 'HEAD')}"
+        + (
+            " (working tree has uncommitted changes)"
+            if git("status", "--porcelain")
+            else ""
+        ),
+        f"config: Config({fields})",
+        "cache files:",
+    ]
+    for m in methods:
+        path = _method_cache_path(cfg, m)
+        lines.append(f"  {m}: {path.name}" + ("" if path.exists() else "  (not cached)"))
+    return "\n".join(lines)
 
 
 def _ordered(parts: dict[str, pd.DataFrame], methods: list[str]) -> pd.DataFrame:
