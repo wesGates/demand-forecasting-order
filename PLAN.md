@@ -84,6 +84,33 @@ Fourier/STL item below.
   a model on the seasonally adjusted series. Worth evaluating once the four
   items above are done, since the annual shape is where the classical
   models could gain against XGBoost, which already sees day of year.
+- **SQL Server as the results store** (designed 2026-09-23, not built).
+  SQL Server in a Docker container as source and sink for the pipeline,
+  in new files only, so no cached run is invalidated:
+  1. sales, calendar, store and item tables loaded from the M5 files, with
+     a test that the panel read back equals `load_panel`;
+  2. a `run` table with one row per cache entry (run id = cache digest;
+     method, `pool_by`, `fold_step`, `n_folds`, horizon, seed, item and
+     store scope, code digest, branch, commit, full config as JSON) and a
+     `forecast` table keyed by run, store, item, origin and target date;
+     actuals come from a join on the sales table, not a copy; filled by an
+     idempotent sync from `cache/predictions/`, never edited by hand;
+  3. scoring views (RMSSE, bias, WAPE, MAPE, win rate, quartiles by store
+     and kind of week) with a test that they equal the pandas tables;
+  4. a daily job that reads history up to a date, fits, and writes the next
+     seven days; rerunning a date must leave the table unchanged.
+  Optional throughout: everything still runs without a database. CI can
+  run the tests against a SQL Server service container on synthetic
+  series, never the licensed data. Costs: Docker setup, a second copy of
+  the results kept honest by the sync rule, metric definitions in two
+  languages kept equal by a test. About 5–6 h.
+- **Plain-language explanations per forecast.** XGBoost's exact feature
+  contributions (`pred_contribs`) summed into a few groups (recent level,
+  day of week, holiday, SNAP, time of year), one sentence per forecast, a
+  test that each explanation adds up to its forecast, and a stability
+  check across adjacent origins. ETS and ARIMA explain themselves through
+  their components and regression coefficients (FPP ch. 8 and ch. 10).
+  Explanations describe the model, not the customer (FPP §7.8).
 
 ## Costs and the cache
 
