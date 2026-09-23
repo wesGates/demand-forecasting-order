@@ -1,9 +1,81 @@
 # Item 5 — XGBoost on a level-relative target
 
-**Status: development numbers.** Weekly origins (52 folds, step 7), not the
-reported every-day layout. The every-day confirmation (four runs of the new
-method, about 2 h) has not been made. Nothing here is a reported result
-until it has.
+**Status: confirmed on the every-day layout** (next section). The weekly
+development numbers further down agree with it to within 0.007 RMSSE.
+
+## Every-day confirmation (reported layout)
+
+`Config(fold_step=1, n_folds=358)`, 3,580 store-origins per method, run
+2026-09-23 12:36–14:07. Only `xgboost_rel` (per store and pooled, both
+items) was fitted; every other method was read from the cache.
+
+Provenance, printed at run time by `provenance()`; the log is kept outside
+the repository at `demand-forecasting-notes/runs/item5_every_day.log`.
+Commits were made to `PLAN.md` while the run was going, so the stages record
+different commits; the model code is identical at all three (`ce7c7a2`,
+`af30195`, `391fb19` differ only in `PLAN.md`).
+
+```
+FOODS_1_021, per store   commit ce7c7a2   xgboost_rel_*: fitted this run
+FOODS_1_021, pooled      commit af30195
+FOODS_3_586, per store   commit 391fb19   xgboost_rel: xgboost_rel_031084e4a59d.parquet
+FOODS_3_586, pooled      commit 391fb19
+config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=(<item>,), mask_holidays=False, min_train_days=365, n_folds=358, pool_by=<None|'item_id'>, rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
+```
+
+Run times: FOODS_1_021 per store 1,788 s, pooled 251 s; FOODS_3_586 per
+store 2,427 s, pooled 976 s.
+
+### FOODS_3_586 (fast mover)
+
+| method | RMSSE all | normal | holiday | bias | win vs seasonal naïve | median improvement | Q1 |
+|---|---|---|---|---|---|---|---|
+| XGBoost, level-relative, pooled | **0.612** | **0.600** | **0.664** | +0.21 | 84.0% | 28.0% | 10.7% |
+| XGBoost, pooled | 0.621 | 0.607 | 0.681 | +0.25 | 84.0% | 26.9% | 9.6% |
+| XGBoost, level-relative, per store | 0.640 | 0.624 | 0.712 | +0.22 | 81.4% | 25.0% | 7.0% |
+| ARIMA | 0.647 | 0.622 | 0.756 | −0.01 | 83.2% | 25.4% | 9.4% |
+| XGBoost, per store | 0.666 | 0.649 | 0.742 | +0.79 | 75.8% | 23.1% | 0.9% |
+| ETS | 0.670 | 0.635 | 0.820 | −0.07 | 83.7% | 21.7% | 7.4% |
+| 28-day moving average | 0.795 | 0.771 | 0.901 | −0.04 | 59.5% | 8.8% | −17.7% |
+| seasonal naïve | 0.864 | 0.825 | 1.034 | −0.05 | | | |
+
+Best method by store: level-relative pooled at six, plain pooled at three,
+ETS at CA_4. Bias at the busiest store (TX_2): +3.54 per store → +1.61
+pooled → +1.47 level-relative pooled.
+
+### FOODS_1_021 (slow, declining)
+
+| method | RMSSE all | normal | holiday | bias | win vs seasonal naïve |
+|---|---|---|---|---|---|
+| 28-day moving average | **0.497** | 0.496 | 0.500 | +0.08 | 82.1% |
+| ETS | 0.500 | 0.499 | 0.504 | +0.14 | 81.0% |
+| XGBoost, level-relative, pooled | 0.500 | 0.499 | 0.507 | +0.18 | 81.7% |
+| XGBoost, level-relative, per store | 0.508 | 0.506 | 0.513 | +0.19 | 80.0% |
+| ARIMA | 0.518 | 0.511 | 0.549 | +0.33 | 77.0% |
+| XGBoost, pooled | 0.570 | 0.564 | 0.596 | +0.57 | 69.6% |
+| XGBoost, per store | 0.610 | 0.605 | 0.630 | +0.95 | 62.0% |
+| seasonal naïve | 0.687 | 0.691 | 0.670 | +0.03 | |
+
+Against the 28-day mean, the level-relative models win about half the
+forecasts with a median difference of −0.2% (pooled) and −0.3% (per store):
+a tie. Best method by store: 28-day mean at five, level-relative pooled at
+two, ETS at two, ARIMA at one. Bias at CA_1: +3.68 per store → +0.74
+level-relative pooled; at WI_1: +2.31 → +0.14.
+
+### What it says
+
+1. On the fast mover the level-relative pooled model is the best method in
+   the study (0.612 against the plain pooled 0.621 and ARIMA 0.647), and
+   the best on holiday weeks (0.664).
+2. On the declining item it removes the loss item 4 found: pooled 0.570 →
+   0.500, level with ETS and 0.003 behind the 28-day mean.
+3. One configuration — pooled across stores, level-relative target — is
+   therefore at or near the top on both items. Routing still matters: on
+   the declining item a 28-day mean is as good and far cheaper.
+
+## Development numbers (weekly origins)
+
+The rest of this file is the weekly-origin comparison made first.
 
 ## Provenance
 

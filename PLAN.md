@@ -66,7 +66,7 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
 | 2. every day an origin | `item2-fold-step-1`, merged | tables within 0.005; naive/drift Sunday bias was an artefact; adopted as reported layout |
 | 3. pooled XGBoost | `item3-pooling`, merged | best method on the fast mover: 0.621 vs ARIMA 0.647; Q1 improvement 10% vs 1% |
 | 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
-| 5. level-relative target | `item5-level-relative-target` | development numbers only (weekly origins): pooled 0.498 vs moving average 0.496 on the intermittent item (was 0.571); 0.616, best, on the fast mover; every-day confirmation not run |
+| 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
 
 Next, in order: (a) a level-relative target for the trees on declining
 items; (b) the pooled model's own residuals and calibrated quantiles; (c)
