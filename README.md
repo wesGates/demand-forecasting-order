@@ -154,7 +154,7 @@ Then:
 
 ```
 python -m src.validate          # must pass before any number is quoted
-python -m pytest tests          # 82 tests pinning documented behaviour
+python -m pytest tests          # tests pinning documented behaviour
 python -m src.render_figures    # all figures -> figures/<notebook>/
 python -m src.step5_evaluate    # the comparison, as tables
 python -m src.order             # prototype: forecast -> order quantity (follow-on work)

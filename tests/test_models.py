@@ -228,3 +228,21 @@ def test_arima_order_is_selected_on_this_runs_first_training_window(
 
     assert len(windows) == 2, "second run reused the order chosen for another fold layout"
     assert windows[1] == first_window_short - 4 * 7
+
+
+def test_pooled_model_is_fitted_once_per_origin(panel, tmp_path):
+    """
+    With `pool_by`, every store's call at the same origin trains on the same
+    pooled rows, so the fit is shared: three stores and three folds must be
+    three fits, not nine, and the memo must be cleared by the run reset.
+    """
+    from src.models import xgboost_model as xm
+    from src.step4_models import reset_run_state
+
+    cfg = Config(n_folds=3, min_train_days=200, cache_dir=tmp_path, pool_by="item_id")
+    p = run_walk_forward(panel, cfg, methods=["xgboost"], progress=False, use_cache=False)
+    assert panel["id"].nunique() == 3
+    assert len(xm._pooled_models) == 3
+    assert p["forecast"].notna().all()
+    reset_run_state()
+    assert xm._pooled_models == {}

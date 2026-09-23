@@ -1,5 +1,26 @@
 # Item 2 — every day an origin
 
+## Provenance
+
+Every number below comes from these runs. The branch and commit name the code; the config line rebuilds the run; the cache files hold the predictions, each with a sidecar recording the config and code digest it was made under.
+
+**run**
+```
+branch: item2-fold-step-1 (run made with the code of main at 0ef4642; findings committed at 0ba2905)
+commit: 0ef4642
+config: Config(cat_id=None, dept_id=None, fold_step=1, horizon=7, item_ids=('FOODS_3_586',), mask_holidays=False, min_train_days=365, n_folds=358, pool_by=None, rmsse_scale_lag=7, rmsse_scale_window='pre_holdout', season=7, seed=0, store_ids=(), test_window=7, use_price=False)
+cache files:
+  mean: mean_7af186ba56d9.parquet
+  naive: naive_4a269bf6f92f.parquet
+  seasonal_naive: seasonal_naive_fccb0fe81a6f.parquet
+  seasonal_naive_364: seasonal_naive_364_f77d4df4aaff.parquet
+  drift: drift_84c28e41c2c1.parquet
+  moving_average_28: moving_average_28_78a6f14743a5.parquet
+  xgboost: xgboost_9523523e8a9c.parquet
+  ets: ets_addfb1ac6481.parquet
+  arima: arima_7da8f684e059.parquet
+```
+
 Dated 2026-09-23. `FOODS_3_586`, ten stores, the same scored year
 (25 May 2015 – 22 May 2016), `Config(fold_step=1, n_folds=358)`: 358 origins
 one day apart, seven-day windows that overlap, 3,580 store-origins scored

@@ -66,7 +66,7 @@ from tqdm import tqdm
 
 from src import step2_data
 from src.features import FEATURE_VERSION, build_supervised, holiday_window
-from src.step1_problem import Config
+from src.step1_problem import PROJECT_ROOT, Config
 from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, reset_run_state
 
 # --------------------------------------------------------------------------- #
@@ -189,13 +189,18 @@ def _method_code(method: str) -> str:
     the module that method lives in. Editing one model's module changes only
     that method's digest, so the others' cached predictions stay valid.
     """
-    from src import step4_models
+    from src import features, step4_models
     from src.models import base
 
+    # The feature and loader modules are hashed too, not only their manual
+    # version numbers: an edit to either changes what a model trains on, and
+    # a forgotten version bump must not serve a stale run.
     parts = [
         _code_digest(Path(__file__)),
         _code_digest(Path(base.__file__)),
         _code_digest(Path(step4_models.MODULE_OF[method].__file__)),
+        _code_digest(Path(features.__file__)),
+        _code_digest(Path(step2_data.__file__)),
         str(FEATURE_VERSION),
         str(step2_data.CACHE_VERSION),
     ]
@@ -418,6 +423,47 @@ def run_walk_forward(
     return _ordered(cached, methods)
 
 
+def provenance(cfg: Config, methods: list[str] | None = None) -> str:
+    """
+    A block for the top of a findings file that ties every number in it to
+    the branch, commit, config and cache files that produced it. Anyone can
+    check out the commit, rebuild the config from the line printed here, and
+    either read the same cache file or recompute and compare.
+
+    Call it in the same checkout and at the same time as the run, or the
+    branch and commit lines describe where the block was written rather
+    than where the predictions were made. Stamping a file later means
+    writing those two lines by hand from the run's history.
+    """
+    import subprocess
+
+    def git(*args):
+        try:
+            return subprocess.check_output(
+                ["git", *args], text=True, cwd=PROJECT_ROOT
+            ).strip()
+        except Exception:  # not a git checkout
+            return "?"
+
+    methods = list(methods or ALL_FORECASTERS)
+    fields = ", ".join(f"{k}={v}" for k, v in _config_fields(cfg).items())
+    lines = [
+        f"branch: {git('rev-parse', '--abbrev-ref', 'HEAD')}",
+        f"commit: {git('rev-parse', '--short', 'HEAD')}"
+        + (
+            " (working tree has uncommitted changes)"
+            if git("status", "--porcelain")
+            else ""
+        ),
+        f"config: Config({fields})",
+        "cache files:",
+    ]
+    for m in methods:
+        path = _method_cache_path(cfg, m)
+        lines.append(f"  {m}: {path.name}" + ("" if path.exists() else "  (not cached)"))
+    return "\n".join(lines)
+
+
 def _ordered(parts: dict[str, pd.DataFrame], methods: list[str]) -> pd.DataFrame:
     """Concatenate per-method frames in the requested method order."""
     frames = [parts[m] for m in methods if m in parts and len(parts[m])]
@@ -426,186 +472,17 @@ def _ordered(parts: dict[str, pd.DataFrame], methods: list[str]) -> pd.DataFrame
     return pd.concat(frames, ignore_index=True)
 
 
-# --------------------------------------------------------------------------- #
-# Scoring
-# --------------------------------------------------------------------------- #
-
-FOLD_KEYS = ["id", "item_id", "store_id", "fold", "origin", "week_kind", "method", "kind"]
-
-
-def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
-    """
-    One row per series-fold-method: RMSE, MAE, bias, and RMSSE.
-
-    RMSSE here is `rmse / scale`, where `scale` came with the predictions. All
-    methods in the same series-fold share that scale, which is why RMSSE
-    cannot change who wins a fold - only how folds and stores are compared.
-
-    Closure days are dropped before scoring (see the module docstring), so a
-    fold containing one is scored on six days rather than seven.
-    """
-    if "closure" in predictions:
-        predictions = predictions[~predictions["closure"].astype(bool)]
-
-    def one(g: pd.DataFrame) -> pd.Series:
-        err = g["forecast"] - g["actual"]
-        rmse = float(np.sqrt(np.mean(err**2)))
-        scale = float(g["scale"].iloc[0])
-        return pd.Series(
-            {
-                "rmse": rmse,
-                "mae": float(np.mean(np.abs(err))),
-                "bias": float(np.mean(err)),
-                "rmsse": rmse / scale if scale > 0 else np.inf,
-                "n_days": len(g),
-                # the store's level that week - what "busiest first" orders by
-                "mean_actual": float(np.mean(g["actual"])),
-            }
-        )
-
-    return (
-        predictions.groupby(FOLD_KEYS, sort=True, observed=True)
-        .apply(one, include_groups=False)
-        .reset_index()
-    )
-
-
-def _weeks(scores: pd.DataFrame, week_kind: str | None) -> pd.DataFrame:
-    """Filter to one kind of week, or keep all when `week_kind` is None."""
-    if week_kind is None:
-        return scores
-    if week_kind not in ("normal", "holiday"):
-        raise ValueError("week_kind must be None, 'normal' or 'holiday'")
-    return scores[scores["week_kind"] == week_kind]
-
-
-def rmsse_by_store(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFrame:
-    """
-    Stores down, methods across, mean RMSSE over folds. The headline table.
-
-    `week_kind` restricts it to "normal" or "holiday" folds; None pools both.
-    """
-    scores = _weeks(scores, week_kind)
-    table = scores.pivot_table(
-        index="store_id", columns="method", values="rmsse", aggfunc="mean"
-    )
-    # Order stores by volume (busiest first) and methods by overall RMSSE.
-    # Volume is the mean actual level; an earlier version sorted by RMSE
-    # ascending, which put the *quietest* store first under a "busiest
-    # first" label.
-    store_order = (
-        scores.groupby("store_id", observed=True)["mean_actual"]
-        .mean()
-        .sort_values(ascending=False)
-        .index
-    )
-    method_order = table.mean(axis=0).sort_values().index
-    return table.reindex(index=store_order, columns=method_order)
-
-
-def win_rates(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFrame:
-    """
-    For every method, the share of series-folds where it beat each benchmark.
-
-    Rows are methods, columns are benchmarks, values are fractions. 0.5 means
-    "no better than the benchmark"; the row for a benchmark against itself is
-    left blank. Win rate is a blunt instrument - it says how *often*, not by
-    how *much* - which is why it sits beside RMSSE rather than replacing it.
-
-    `week_kind` restricts it to "normal" or "holiday" folds; None pools both.
-    """
-    scores = _weeks(scores, week_kind)
-    wide = scores.pivot_table(
-        index=["id", "fold"], columns="method", values="rmsse", aggfunc="first"
-    )
-    out = {}
-    for bench in BENCHMARKS:
-        if bench not in wide:
-            continue
-        out[bench] = {
-            m: float((wide[m] < wide[bench]).mean()) if m != bench else np.nan
-            for m in wide.columns
-        }
-    return pd.DataFrame(out).sort_index()
-
-
-# The benchmark the headline claims are made against. Seasonal naive is what
-# an orderer's default screen shows (this day last week), and it is also the
-# RMSSE denominator, so "improvement over it" and "1 - RMSSE" are the same
-# quantity seen two ways. The 28-day moving average is the harder benchmark
-# and is reported alongside as the stress check.
-REFERENCE_BENCHMARK = "seasonal_naive"
-
-
-def improvement_over(
-    scores: pd.DataFrame,
-    benchmark: str = REFERENCE_BENCHMARK,
-    week_kind: str | None = None,
-) -> pd.DataFrame:
-    """
-    Per method: how often and by how much it beat one benchmark, fold by fold.
-
-    `win_rate` is the share of series-folds with lower RMSSE than the
-    benchmark. The improvement columns are the per-fold percentage reduction
-    in RMSSE relative to the benchmark - mean, and the quartiles, because a
-    mean improvement can hide a quarter of folds that got worse. Rows for the
-    benchmark itself are dropped.
-    """
-    scores = _weeks(scores, week_kind)
-    wide = scores.pivot_table(
-        index=["id", "fold"], columns="method", values="rmsse", aggfunc="first"
-    )
-    if benchmark not in wide:
-        raise ValueError(f"{benchmark!r} is not among the scored methods")
-    rows = []
-    for m in wide.columns:
-        if m == benchmark:
-            continue
-        pair = wide[[m, benchmark]].dropna()
-        gain = (pair[benchmark] - pair[m]) / pair[benchmark] * 100
-        rows.append(
-            {
-                "method": m,
-                "win_rate": float((pair[m] < pair[benchmark]).mean()),
-                "mean_improvement_pct": float(gain.mean()),
-                "q1_pct": float(gain.quantile(0.25)),
-                "median_pct": float(gain.median()),
-                "q3_pct": float(gain.quantile(0.75)),
-                "n_folds": len(pair),
-            }
-        )
-    return (
-        pd.DataFrame(rows)
-        .sort_values("median_pct", ascending=False)
-        .reset_index(drop=True)
-    )
-
-
-def summarise(scores: pd.DataFrame) -> pd.DataFrame:
-    """
-    One row per method: mean and median RMSSE across all series-folds, mean
-    bias, and the mean RMSSE on normal and on holiday folds separately, with
-    the count of each. Sorted best on all folds first. The single table to
-    quote - and quote both week columns, never just the pooled one.
-    """
-    overall = scores.groupby(["method", "kind"], observed=True).agg(
-        rmsse_mean=("rmsse", "mean"),
-        rmsse_median=("rmsse", "median"),
-        bias_mean=("bias", "mean"),
-        n_folds=("rmsse", "size"),
-    )
-    by_kind = scores.pivot_table(
-        index=["method", "kind"],
-        columns="week_kind",
-        values="rmsse",
-        aggfunc=["mean", "size"],
-        observed=True,
-    )
-    for week in ("normal", "holiday"):
-        overall[f"rmsse_{week}"] = by_kind.get(("mean", week), np.nan)
-        overall[f"n_{week}"] = by_kind.get(("size", week), 0)
-    return overall.reset_index().sort_values("rmsse_mean").reset_index(drop=True)
-
+# Scoring and tables live in src/scoring.py, re-exported here so existing
+# imports keep working. They are a separate module so that editing a table
+# does not change this module's code digest and invalidate the cache.
+from src.scoring import (  # noqa: E402
+    REFERENCE_BENCHMARK,
+    improvement_over,
+    rmsse_by_store,
+    score_folds,
+    summarise,
+    win_rates,
+)
 
 if __name__ == "__main__":
     from src.step1_problem import STUDY_ITEMS

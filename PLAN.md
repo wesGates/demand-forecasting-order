@@ -58,6 +58,24 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
    classical and simple methods expected to win where the earlier analysis
    said they would.
 
+## Status, 2026-09-23
+
+| item | branch | outcome |
+|---|---|---|
+| 1. quantile objective | on main | matches post-hoc calibration within 0.002 at 26x the cost; ARIMA + calibration best |
+| 2. every day an origin | `item2-fold-step-1`, merged | tables within 0.005; naive/drift Sunday bias was an artefact; adopted as reported layout |
+| 3. pooled XGBoost | `item3-pooling`, merged | best method on the fast mover: 0.621 vs ARIMA 0.647; Q1 improvement 10% vs 1% |
+| 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
+| 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
+
+Next, in order (revised 2026-09-23 after item 5): (a) the run registry
+and the parallel harness, so every later change is measured quickly
+against its predecessor; (b) the pooled, level-relative model's own
+residuals and calibrated quantiles; (c) intermittent demand properly and
+pooling wider than the item; (d) new items; (e) the SQL Server results
+store and per-forecast explanations; (f) the Fourier/STL item. All are
+described under "Later, not yet scheduled".
+
 ## Later, not yet scheduled
 
 - **Fourier terms and STL decomposition** (FPP §13.1). Daily data carries a
@@ -67,6 +85,54 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
   a model on the seasonally adjusted series. Worth evaluating once the four
   items above are done, since the annual shape is where the classical
   models could gain against XGBoost, which already sees day of year.
+- **A run registry, so every change is measured against the last one.**
+  An append-only table, one row per cached run: run id (the cache
+  digest), method, config fields, code digest, branch, commit, time,
+  run time, and the headline scores on a fixed benchmark suite (`DEV`,
+  weekly, every-day; later a class-stratified item set). A comparison
+  script reports a change against its predecessor paired by store and
+  origin (win rate and improvement quartiles, as the reports already do),
+  so a difference inside the fold-to-fold noise is not read as progress.
+  File-based first (parquet); the same schema becomes the SQL `run` table.
+- **Faster iteration.** A parallel harness over stores and origins
+  (processes, one XGBoost thread each; one writer per cache file; pooled
+  fits memoised per origin; ARIMA orders chosen once and shared). Every
+  full run from hours to minutes on this machine.
+- **Intermittent demand, properly.** A class-stratified item sample,
+  Croston and TSB as registered methods, results by class, and the deep
+  learning models FPP covers, compared on the same folds.
+- **New items (zero-shot / cold start).** Needs its own evaluation design:
+  the harness requires a year of history (`min_train_days`), so new items
+  are scored on items launched inside the test period, against simple
+  fallbacks (category or store averages) and pretrained forecasting models
+  that need no history of the item.
+- **SQL Server as the results store** (designed 2026-09-23, not built).
+  SQL Server in a Docker container as source and sink for the pipeline,
+  in new files only, so no cached run is invalidated:
+  1. sales, calendar, store and item tables loaded from the M5 files, with
+     a test that the panel read back equals `load_panel`;
+  2. a `run` table with one row per cache entry (run id = cache digest;
+     method, `pool_by`, `fold_step`, `n_folds`, horizon, seed, item and
+     store scope, code digest, branch, commit, full config as JSON) and a
+     `forecast` table keyed by run, store, item, origin and target date;
+     actuals come from a join on the sales table, not a copy; filled by an
+     idempotent sync from `cache/predictions/`, never edited by hand;
+  3. scoring views (RMSSE, bias, WAPE, MAPE, win rate, quartiles by store
+     and kind of week) with a test that they equal the pandas tables;
+  4. a daily job that reads history up to a date, fits, and writes the next
+     seven days; rerunning a date must leave the table unchanged.
+  Optional throughout: everything still runs without a database. CI can
+  run the tests against a SQL Server service container on synthetic
+  series, never the licensed data. Costs: Docker setup, a second copy of
+  the results kept honest by the sync rule, metric definitions in two
+  languages kept equal by a test. About 5–6 h.
+- **Plain-language explanations per forecast.** XGBoost's exact feature
+  contributions (`pred_contribs`) summed into a few groups (recent level,
+  day of week, holiday, SNAP, time of year), one sentence per forecast, a
+  test that each explanation adds up to its forecast, and a stability
+  check across adjacent origins. ETS and ARIMA explain themselves through
+  their components and regression coefficients (FPP ch. 8 and ch. 10).
+  Explanations describe the model, not the customer (FPP §7.8).
 
 ## Costs and the cache
 
