@@ -107,6 +107,10 @@ The cache is portable: file paths are not part of the key, so copying
 
 ## Layout
 
+Terms used throughout (origin, fold, layout, the cache, the validator's
+negative controls, pooling, the level-relative target, the scores) are
+defined in `GLOSSARY.md`.
+
 ```
 src/
   step1_problem.py    Config — every decision in one frozen object, with FPP refs

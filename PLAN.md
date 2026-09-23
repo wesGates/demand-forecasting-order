@@ -3,7 +3,8 @@
 Written 2026-09-22, when this repository was split from
 [demand-forecasting](https://github.com/wesGates/demand-forecasting). Read
 this first. It says what the parent established, what is here, what to do
-next and in what order, and the rules of the road.
+next and in what order, and the rules of the road. `GLOSSARY.md` defines
+the terms the findings and the validator use.
 
 ## What the parent established
 
