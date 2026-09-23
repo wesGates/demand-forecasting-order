@@ -58,6 +58,22 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
    classical and simple methods expected to win where the earlier analysis
    said they would.
 
+## Status, 2026-09-23
+
+| item | branch | outcome |
+|---|---|---|
+| 1. quantile objective | on main | matches post-hoc calibration within 0.002 at 26x the cost; ARIMA + calibration best |
+| 2. every day an origin | `item2-fold-step-1`, merged | tables within 0.005; naive/drift Sunday bias was an artefact; adopted as reported layout |
+| 3. pooled XGBoost | `item3-pooling`, merged | best method on the fast mover: 0.621 vs ARIMA 0.647; Q1 improvement 10% vs 1% |
+| 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
+
+Next, in order: (a) a level-relative target for the trees on declining
+items; (b) the pooled model's own residuals and calibrated quantiles; (c)
+pooling wider than the item; (d) a parallel harness over stores and folds
+so full runs take minutes on a large machine; (e) the second report, from
+the every-day layout, with items 3 and 4 as its two results; (f) the
+Fourier/STL item below.
+
 ## Later, not yet scheduled
 
 - **Fourier terms and STL decomposition** (FPP §13.1). Daily data carries a
