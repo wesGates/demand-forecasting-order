@@ -42,7 +42,7 @@ def test_registry_has_six_benchmarks_and_the_expected_models():
         "moving_average_28",
     }
     quantile_names = {method_name(t) for t in TAUS}
-    assert set(MODELS) == {"xgboost", "ets", "arima"} | quantile_names
+    assert set(MODELS) == {"xgboost", "ets", "arima", "xgboost_rel"} | quantile_names
     assert set(ALL_FORECASTERS) == set(BENCHMARKS) | set(MODELS)
     assert not set(BENCHMARKS) & set(MODELS)
 

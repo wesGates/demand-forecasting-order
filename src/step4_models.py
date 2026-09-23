@@ -44,7 +44,14 @@ cross-learning question to a single variable.
 
 from __future__ import annotations
 
-from src.models import arima_model, benchmarks, ets_model, xgboost_model, xgboost_quantile
+from src.models import (
+    arima_model,
+    benchmarks,
+    ets_model,
+    xgboost_model,
+    xgboost_quantile,
+    xgboost_relative,
+)
 from src.models.arima_model import (
     _arima_exog,
     _select_arima_order,
@@ -60,6 +67,7 @@ MODELS: dict[str, Forecaster] = {
     "xgboost": fit_predict_xgboost,
     "ets": fit_predict_ets,
     "arima": fit_predict_arima,
+    "xgboost_rel": xgboost_relative.fit_predict_xgboost_relative,
     **xgboost_quantile.QUANTILE_MODELS,
 }
 
@@ -74,6 +82,7 @@ MODULE_OF = {
     "xgboost": xgboost_model,
     "ets": ets_model,
     "arima": arima_model,
+    "xgboost_rel": xgboost_relative,
     **{name: xgboost_quantile for name in xgboost_quantile.QUANTILE_MODELS},
 }
 
@@ -87,6 +96,7 @@ def reset_run_state() -> None:
     arima_orders.clear()
     xgboost_quantile.reset()
     xgboost_model.reset()
+    xgboost_relative.reset()
 
 
 __all__ = [
