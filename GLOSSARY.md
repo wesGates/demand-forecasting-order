@@ -182,3 +182,25 @@ compare.
 **DEV preset.** `Config(**DEV)`: three stores, eight folds, weekly layout.
 About twenty seconds for XGBoost, for iterating on a model change before
 paying for a full run.
+
+## The run registry
+
+**Run registry.** `cache/registry.sqlite`, one row per cached run in `run`
+and one row per store-origin in `fold_score`, built from the cache and git
+by `src/registry.py`. It answers "which runs exist, at what commit, and how
+did they score" without reading the cache. Rebuilt with `python -m
+src.registry backfill`; never edited by hand.
+
+**Suite.** A named, fixed layout a change is scored on (`dev`, `weekly`,
+`everyday` in `src/suites.py`). The item, the pooling and the method are
+chosen per run; the suite pins folds and stores so that two runs are
+comparable.
+
+**Predecessor.** The most recent earlier run of the same method on the same
+suite, item, stores and pooling. `python -m src.registry last <run_id>`
+compares a run with it.
+
+**Paired comparison.** Two runs compared on the store-origins they share:
+for each, the percentage by which B's RMSSE is below A's. Reported as B's
+win rate and the quartiles of that percentage. A change inside the
+fold-to-fold noise shows a win rate near 50% and a median near zero.

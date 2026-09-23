@@ -68,10 +68,11 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
 | 3. pooled XGBoost | `item3-pooling`, merged | best method on the fast mover: 0.621 vs ARIMA 0.647; Q1 improvement 10% vs 1% |
 | 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
 | 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
+| 6. run registry | `item6-run-registry` | SQLite `run` + `fold_score` tables beside the cache, suites, `src.run`; 204 runs back-filled; first paired comparison shows item 5's fast-mover gain is marginal (54% wins, median +1.2%) |
 
-Next, in order (revised 2026-09-23 after item 5): (a) the run registry
-and the parallel harness, so every later change is measured quickly
-against its predecessor; (b) the pooled, level-relative model's own
+Next, in order (revised 2026-09-23 after item 6): (a) the parallel
+harness, so every later change is measured quickly against its
+predecessor (the registry is done); (b) the pooled, level-relative model's own
 residuals and calibrated quantiles; (c) intermittent demand properly and
 pooling wider than the item; (d) new items; (e) the SQL Server results
 store and per-forecast explanations; (f) the Fourier/STL item. All are
@@ -86,15 +87,9 @@ described under "Later, not yet scheduled".
   a model on the seasonally adjusted series. Worth evaluating once the four
   items above are done, since the annual shape is where the classical
   models could gain against XGBoost, which already sees day of year.
-- **A run registry, so every change is measured against the last one.**
-  An append-only table, one row per cached run: run id (the cache
-  digest), method, config fields, code digest, branch, commit, time,
-  run time, and the headline scores on a fixed benchmark suite (`DEV`,
-  weekly, every-day; later a class-stratified item set). A comparison
-  script reports a change against its predecessor paired by store and
-  origin (win rate and improvement quartiles, as the reports already do),
-  so a difference inside the fold-to-fold noise is not read as progress.
-  File-based first (parquet); the same schema becomes the SQL `run` table.
+- **Run registry: done as item 6.** Remaining: a `rekey` event type
+  (with item 7), and suites for a class-stratified item set and for new
+  items.
 - **Faster iteration.** A parallel harness over stores and origins
   (processes, one XGBoost thread each; one writer per cache file; pooled
   fits memoised per origin; ARIMA orders chosen once and shared). Every
