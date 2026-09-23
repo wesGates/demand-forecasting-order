@@ -81,25 +81,20 @@ def design(ctx: Context):
     return x_train, train["target"].to_numpy(dtype=float), x_pred, inner_fit
 
 
-def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
-    """
-    Gradient-boosted trees on the supervised matrix.
+# Fitted pooled models for the current run, keyed by (pool scope, origin,
+# members). A pooled model trains on every series in the pool, so it is the
+# same model whichever series asks for it; without this memo the harness
+# would refit it once per series per origin - ten identical fits for ten
+# stores. Cleared by `reset_run_state()` at the start of every run.
+_pooled_models: dict[tuple, object] = {}
 
-    Identical code for both the per-series and the pooled variant - the only
-    difference is how many stores' rows arrived in `ctx.train_pool`, and whether
-    store identity is offered as a feature. Isolating the comparison to that one
-    difference is the point.
 
-    Predictions are clipped at zero: demand cannot be negative, and a tree
-    ensemble extrapolating below the data would otherwise happily go there.
-    """
+def reset() -> None:
+    _pooled_models.clear()
+
+
+def _fit(x_train, y_train, inner_fit, params):
     from xgboost import XGBRegressor
-
-    parts = design(ctx)
-    if parts is None:
-        return np.full(ctx.horizon, np.nan)
-    x_train, y_train, x_pred, inner_fit = parts
-    params = {**XGB_PARAMS, **overrides, "random_state": ctx.seed}
 
     if inner_fit.sum() and (~inner_fit).sum():
         model = XGBRegressor(
@@ -119,5 +114,34 @@ def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
         # deliberately modest tree count rather than the 2000 upper bound.
         model = XGBRegressor(**{**params, "n_estimators": 150}, enable_categorical=True)
         model.fit(x_train, y_train)
+    return model
 
+
+def fit_predict_xgboost(ctx: Context, **overrides) -> np.ndarray:
+    """
+    Gradient-boosted trees on the supervised matrix.
+
+    Identical code for both the per-series and the pooled variant - the only
+    difference is how many stores' rows arrived in `ctx.train_pool`, and whether
+    store identity is offered as a feature. Isolating the comparison to that one
+    difference is the point. A pooled model is fitted once per origin and
+    reused for every series in the pool.
+
+    Predictions are clipped at zero: demand cannot be negative, and a tree
+    ensemble extrapolating below the data would otherwise happily go there.
+    """
+    parts = design(ctx)
+    if parts is None:
+        return np.full(ctx.horizon, np.nan)
+    x_train, y_train, x_pred, inner_fit = parts
+    params = {**XGB_PARAMS, **overrides, "random_state": ctx.seed}
+
+    if ctx.pool_by is not None:
+        members = tuple(sorted(ctx.train_pool["id"].unique()))
+        key = (ctx.pool_by, ctx.origin, members, tuple(sorted(overrides.items())))
+        if key not in _pooled_models:
+            _pooled_models[key] = _fit(x_train, y_train, inner_fit, params)
+        return np.clip(_pooled_models[key].predict(x_pred), 0, None)
+
+    model = _fit(x_train, y_train, inner_fit, params)
     return np.clip(model.predict(x_pred), 0, None)

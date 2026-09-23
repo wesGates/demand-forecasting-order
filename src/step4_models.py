@@ -86,6 +86,7 @@ def reset_run_state() -> None:
     """
     arima_orders.clear()
     xgboost_quantile.reset()
+    xgboost_model.reset()
 
 
 __all__ = [
