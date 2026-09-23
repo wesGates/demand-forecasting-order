@@ -562,7 +562,13 @@ def improvement_over(
         if m == benchmark:
             continue
         pair = wide[[m, benchmark]].dropna()
-        gain = (pair[benchmark] - pair[m]) / pair[benchmark] * 100
+        # A benchmark can score exactly zero on a fold - a week of zero sales
+        # forecast as zero by seasonal naive on an intermittent item - and a
+        # percentage improvement over zero is undefined. Those folds still
+        # count toward the win rate (nothing beats a zero) but not toward the
+        # improvement quartiles, and the column says how many were dropped.
+        undefined = pair[benchmark] <= 0
+        gain = (pair[benchmark] - pair[m])[~undefined] / pair[benchmark][~undefined] * 100
         rows.append(
             {
                 "method": m,
@@ -572,6 +578,7 @@ def improvement_over(
                 "median_pct": float(gain.median()),
                 "q3_pct": float(gain.quantile(0.75)),
                 "n_folds": len(pair),
+                "n_undefined": int(undefined.sum()),
             }
         )
     return (
