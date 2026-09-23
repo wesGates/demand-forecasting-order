@@ -68,12 +68,13 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
 | 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
 | 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
 
-Next, in order: (a) a level-relative target for the trees on declining
-items; (b) the pooled model's own residuals and calibrated quantiles; (c)
-pooling wider than the item; (d) a parallel harness over stores and folds
-so full runs take minutes on a large machine; (e) the second report, from
-the every-day layout, with items 3 and 4 as its two results; (f) the
-Fourier/STL item below.
+Next, in order (revised 2026-09-23 after item 5): (a) the run registry
+and the parallel harness, so every later change is measured quickly
+against its predecessor; (b) the pooled, level-relative model's own
+residuals and calibrated quantiles; (c) intermittent demand properly and
+pooling wider than the item; (d) new items; (e) the SQL Server results
+store and per-forecast explanations; (f) the Fourier/STL item. All are
+described under "Later, not yet scheduled".
 
 ## Later, not yet scheduled
 
