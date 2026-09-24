@@ -182,3 +182,60 @@ compare.
 **DEV preset.** `Config(**DEV)`: three stores, eight folds, weekly layout.
 About twenty seconds for XGBoost, for iterating on a model change before
 paying for a full run.
+
+## The run registry
+
+**Run registry.** `cache/registry.sqlite`, one row per cached run in `run`
+and one row per store-origin in `fold_score`, built from the cache and git
+by `src/registry.py`. It answers "which runs exist, at what commit, and how
+did they score" without reading the cache. Rebuilt with `python -m
+src.registry backfill`; never edited by hand.
+
+**Suite.** A named, fixed layout a change is scored on (`dev`, `weekly`,
+`everyday` in `src/suites.py`). The item, the pooling and the method are
+chosen per run; the suite pins folds and stores so that two runs are
+comparable.
+
+**Predecessor.** The most recent earlier run of the same method on the same
+suite, item, stores and pooling. `python -m src.registry last <run_id>`
+compares a run with it.
+
+**Paired comparison.** Two runs compared on the store-origins they share:
+for each, the percentage by which B's RMSSE is below A's. Reported as B's
+win rate and the quartiles of that percentage. A change inside the
+fold-to-fold noise shows a win rate near 50% and a median near zero.
+
+## The parallel harness (item 7)
+
+**Task.** The unit of work handed to a worker process: one fold of one
+series when models fit per series; one fold of *every* series when they
+pool (a pooled model is fitted once per origin and shared by the stores, so
+the stores sit in the same process). Each task rebuilds the same `Context`
+the serial loop built, runs every requested method on it, and returns the
+rows. (`_forecast_task` in `src/step5_evaluate.py`.)
+
+**One thread per fit.** XGBoost runs with `n_jobs=1` and every numerical
+library is pinned to one thread inside each worker (`threadpoolctl`).
+Speed comes from running many single-threaded fits at once, not from
+threads inside a fit: on this machine that is about 8× faster for XGBoost
+and 6× for ARIMA than the old all-cores-per-fit setting, because these fits
+are too small to use twenty threads well. It also makes the forecasts
+independent of how many cores the machine has, which the old setting was
+not (XGBoost's floating-point sums depend on the thread count).
+
+**`n_jobs`.** How many worker processes the harness uses (default: every
+core). It changes wall time only, never a forecast, so it is not part of
+the cache key. `n_jobs=1` runs the same task function in-process, which is
+what the tests compare against.
+
+**ARIMA order selection.** ARIMA chooses its order once per series on that
+series' first scored window and holds it for the year. With folds spread
+over processes, the harness makes that choice first, in parallel over
+series, and hands the orders to every worker; otherwise each worker would
+choose its own on whatever window it saw first.
+
+**Reproducibility caveat.** With the seed and the thread count fixed, a
+fit is deterministic on the same platform. XGBoost's column subsampling
+can still give different (but each reproducible) results on a different
+operating system, so cross-machine identity is claimed only for the same
+OS and library versions.

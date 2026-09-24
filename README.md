@@ -105,6 +105,28 @@ keyed on the config and on the code that method depends on:
 The cache is portable: file paths are not part of the key, so copying
 `cache/` into a fork or another machine carries the runs across.
 
+## Measuring every change against the last one
+
+`cache/registry.sqlite` lists every run on record: one row per cached run
+(method, layout, item, pooling, code digest, git commit, time, headline
+scores against the seasonal naive and the 28-day mean) and one row per
+store-origin scored. It is built from the cache and git only, never edited
+by hand, and rebuilt with `python -m src.registry backfill`.
+
+```
+python -m src.run --suite dev --item fast --methods xgboost_rel --note "what this tries"
+python -m src.registry list everyday
+python -m src.registry last <run_id>          # paired against its predecessor
+python -m src.registry compare <run_a> <run_b>
+```
+
+Suites (`src/suites.py`) fix the layout a change is scored on: `dev` (three
+stores, eight weekly folds, ~20 s), `weekly` (52 folds), `everyday` (358
+origins, the reported layout). A comparison pairs the same store and
+origin under two runs and reports the win rate and the quartiles of the
+improvement, so a change inside the fold-to-fold noise reads as a win rate
+near 50% and a median near zero rather than as progress.
+
 ## Layout
 
 Terms used throughout (origin, fold, layout, the cache, the validator's

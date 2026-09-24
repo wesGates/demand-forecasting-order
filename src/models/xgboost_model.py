@@ -19,7 +19,7 @@ XGB_PARAMS = dict(
     subsample=0.8,
     colsample_bytree=0.8,
     reg_lambda=1.0,
-    n_jobs=-1,
+    n_jobs=1,  # one thread per fit; parallelism is across fits, in the harness
     tree_method="hist",
 )
 

@@ -230,7 +230,7 @@ def test_arima_order_is_selected_on_this_runs_first_training_window(
     assert windows[1] == first_window_short - 4 * 7
 
 
-def test_pooled_model_is_fitted_once_per_origin(panel, tmp_path):
+def test_pooled_model_is_fitted_once_per_origin(panel, tmp_path, monkeypatch):
     """
     With `pool_by`, every store's call at the same origin trains on the same
     pooled rows, so the fit is shared: three stores and three folds must be
@@ -240,9 +240,19 @@ def test_pooled_model_is_fitted_once_per_origin(panel, tmp_path):
     from src.step4_models import reset_run_state
 
     cfg = Config(n_folds=3, min_train_days=200, cache_dir=tmp_path, pool_by="item_id")
-    p = run_walk_forward(panel, cfg, methods=["xgboost"], progress=False, use_cache=False)
+    fits = []
+    real_fit = xm._fit
+
+    def counting_fit(*args, **kwargs):
+        fits.append(1)
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(xm, "_fit", counting_fit)
+    # in-process, so the count is visible here; the harness resets the memo
+    # at the start of every task, and a task is one origin when pooling
+    p = run_walk_forward(panel, cfg, methods=["xgboost"], progress=False, use_cache=False, n_jobs=1)
     assert panel["id"].nunique() == 3
-    assert len(xm._pooled_models) == 3
+    assert len(fits) == 3
     assert p["forecast"].notna().all()
     reset_run_state()
     assert xm._pooled_models == {}

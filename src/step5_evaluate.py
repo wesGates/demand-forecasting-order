@@ -58,6 +58,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -288,6 +290,7 @@ def run_walk_forward(
     methods: list[str] | None = None,
     progress: bool = True,
     use_cache: bool = True,
+    n_jobs: int | None = None,
 ) -> pd.DataFrame:
     """
     Every forecast from every method for every series-fold, with the actuals.
@@ -306,6 +309,12 @@ def run_walk_forward(
     config and the code that method depends on - see `_method_cache_path`.
     A method whose code has not changed is served from cache while the others
     are refitted. `use_cache=False` forces a full rerun.
+
+    `n_jobs` is how many fits run at once, in separate processes, one thread
+    each (default: every core). It changes wall time only: every fit is
+    single-threaded whatever `n_jobs` is, so the forecasts are the same for
+    any value, and the same on any machine with the same library versions.
+    Parallelism is therefore not part of the cache key.
     """
     methods = list(methods or ALL_FORECASTERS)
     unknown = set(methods) - set(ALL_FORECASTERS)
@@ -327,100 +336,276 @@ def run_walk_forward(
         return _ordered(cached, methods)
 
     # ARIMA memoises its chosen order per series on the first fold it sees,
-    # and the quantile model memoises its fit per fold. Both must belong to
-    # *this* run: a second layout in the same process would otherwise inherit
-    # state from a window that may reach into its own scored period.
+    # and the tree models memoise fits per fold or per origin. All of it must
+    # belong to *this* run: a second layout in the same process would
+    # otherwise inherit state from a window that may reach into its own
+    # scored period. Workers reset per task; the parent resets here.
     reset_run_state()
 
-    last_date = df["date"].max()
-    origins = cfg.fold_origins(last_date)
-    holdout = cfg.holdout_start(last_date)
-    matrices = supervised_matrices(df, cfg)
+    state = _run_state(df, cfg, to_run)
+    n_jobs = max(1, n_jobs or os.cpu_count() or 1)
 
-    rows = []
-    groups = df.groupby("id", sort=True, observed=True)
-    for series_id, series in tqdm(groups, desc="series", disable=not progress):
-        series = series.sort_values("date").reset_index(drop=True)
-        item_id, store_id = series["item_id"].iloc[0], series["store_id"].iloc[0]
+    # ARIMA's order is chosen once per series, on that series' first scored
+    # window, and held for the year. With folds spread over processes that
+    # choice has to be made first and handed to every worker, or each would
+    # choose its own on whatever window it saw first.
+    if "arima" in to_run:
+        state["arima_orders"] = _select_arima_orders(state, n_jobs, progress)
 
-        # The rows a learned model may train on: this series alone, or every
-        # series that shares its pool key. Which is `Config.pool_by`'s decision.
-        if cfg.pool_by is None:
-            pool = matrices[series_id]
-        else:
-            key = series[cfg.pool_by].iloc[0]
-            members = df.loc[df[cfg.pool_by] == key, "id"].unique()
-            pool = pd.concat([matrices[m] for m in members], ignore_index=True)
-
-        # "pre_holdout": one denominator for this series, from everything
-        # before the first scored day. Shared by every fold and every method.
-        fixed_scale = naive_scale(
-            series.loc[series["date"] < holdout, "sales"], cfg.rmsse_scale_lag
-        )
-
-        for fold, origin in enumerate(origins):
-            history = series[series["date"] <= origin]
-            window_end = origin + pd.Timedelta(days=cfg.test_window)
-            targets = series[(series["date"] > origin) & (series["date"] <= window_end)]
-            if len(history) < cfg.min_train_days or len(targets) < cfg.test_window:
-                continue
-
-            if cfg.rmsse_scale_window == "per_fold":
-                scale = naive_scale(history["sales"], cfg.rmsse_scale_lag)
-            else:
-                scale = fixed_scale
-
-            ctx = Context(
-                history=history,
-                targets=targets.drop(columns=["sales"]),
-                origin=origin,
-                horizon=cfg.horizon,
-                series_id=series_id,
-                season=cfg.season,
-                train_pool=pool,
-                pool_by=cfg.pool_by,
-                seed=cfg.seed,
-            )
-            actual = targets["sales"].to_numpy(dtype=float)
-            dates = targets["date"].to_numpy()
-            closure = targets["closure"].to_numpy(dtype=bool)
-            in_window = holiday_window(targets).to_numpy(dtype=bool)
-            week_kind = "holiday" if in_window.any() else "normal"
-
-            for name in to_run:
-                forecast = np.asarray(ALL_FORECASTERS[name](ctx), dtype=float)[
-                    : len(targets)
-                ]
-                for h, (day, a, f, c, w) in enumerate(
-                    zip(dates, actual, forecast, closure, in_window, strict=True), 1
-                ):
-                    rows.append(
-                        {
-                            "id": series_id,
-                            "item_id": item_id,
-                            "store_id": store_id,
-                            "fold": fold,
-                            "origin": origin,
-                            "week_kind": week_kind,
-                            "method": name,
-                            "kind": "benchmark" if name in BENCHMARKS else "model",
-                            "horizon": h,
-                            "target_date": day,
-                            "actual": a,
-                            "forecast": f,
-                            "scale": scale,
-                            "closure": c,
-                            "holiday_window": w,
-                        }
-                    )
+    tasks = _tasks(state)
+    rows: list[dict] = []
+    for chunk in _map(state, _forecast_task, tasks, n_jobs, progress, desc="folds"):
+        rows.extend(chunk)
 
     fresh = pd.DataFrame(rows)
     for name in to_run:
-        part = fresh[fresh["method"] == name].reset_index(drop=True)
+        part = (
+            fresh[fresh["method"] == name]
+            .sort_values(["id", "fold", "horizon"], kind="stable")
+            .reset_index(drop=True)
+        )
         cached[name] = part
         if use_cache:
             _write_cached(cfg, name, part)
     return _ordered(cached, methods)
+
+
+# --------------------------------------------------------------------------- #
+# The work, split into tasks that run in parallel
+# --------------------------------------------------------------------------- #
+#
+# A task is one fold of one series when models fit per series, or one fold of
+# every series when they pool: a pooled model is fitted once per origin and
+# shared by the ten stores, so the ten have to sit in the same process. Each
+# task rebuilds exactly the Context the serial loop built, calls every method
+# in `to_run` on it, and returns the rows. Nothing is shared between tasks
+# except the read-only state handed to each worker at start-up.
+
+_STATE: dict = {}
+
+
+def _run_state(df: pd.DataFrame, cfg: Config, to_run: list[str]) -> dict:
+    """Everything a worker needs, built once: series, training pools, scales, origins."""
+    last_date = df["date"].max()
+    origins = list(cfg.fold_origins(last_date))
+    holdout = cfg.holdout_start(last_date)
+    matrices = supervised_matrices(df, cfg)
+
+    series: dict[str, pd.DataFrame] = {}
+    pools: dict[str, pd.DataFrame] = {}
+    scales: dict[str, float] = {}
+    shared_pools: dict = {}
+    for series_id, frame in df.groupby("id", sort=True, observed=True):
+        frame = frame.sort_values("date").reset_index(drop=True)
+        series[series_id] = frame
+        # The rows a learned model may train on: this series alone, or every
+        # series that shares its pool key. Which is `Config.pool_by`'s decision.
+        if cfg.pool_by is None:
+            pools[series_id] = matrices[series_id]
+        else:
+            key = frame[cfg.pool_by].iloc[0]
+            if key not in shared_pools:
+                members = df.loc[df[cfg.pool_by] == key, "id"].unique()
+                shared_pools[key] = pd.concat(
+                    [matrices[m] for m in members], ignore_index=True
+                )
+            pools[series_id] = shared_pools[key]
+        # "pre_holdout": one denominator for this series, from everything
+        # before the first scored day. Shared by every fold and every method.
+        scales[series_id] = naive_scale(
+            frame.loc[frame["date"] < holdout, "sales"], cfg.rmsse_scale_lag
+        )
+    return {
+        "cfg": cfg,
+        "to_run": list(to_run),
+        "ids": list(series),
+        "series": series,
+        "pools": pools,
+        "scales": scales,
+        "origins": origins,
+        "holdout": holdout,
+        "arima_orders": {},
+    }
+
+
+def _tasks(state: dict) -> list[tuple]:
+    cfg = state["cfg"]
+    folds = range(len(state["origins"]))
+    if cfg.pool_by is None:
+        return [(sid, fold) for sid in state["ids"] for fold in folds]
+    return [(None, fold) for fold in folds]
+
+
+def _init_worker(state: dict) -> None:
+    """
+    Runs once per worker process: take the state and pin every numerical
+    library to one thread. The environment variables catch libraries not yet
+    loaded (XGBoost imports lazily, and its OpenMP pool reads them at load);
+    `threadpool_limits` catches the ones already loaded. Both are needed:
+    with twenty workers each spawning twenty OpenMP threads, the machine ran
+    four hundred busy-waiting threads and crawled.
+    """
+    global _STATE
+    _STATE = state
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[var] = "1"
+    import xgboost  # noqa: F401  - load it now, under the limit
+    from threadpoolctl import threadpool_limits
+
+    threadpool_limits(limits=1)
+    from src.models import arima_model
+
+    arima_model.arima_orders.clear()
+    arima_model.arima_orders.update(state["arima_orders"])
+
+
+def _fold_context(series_id: str, fold: int, state: dict):
+    """The Context and scoring metadata for one fold of one series, or None if it is not scored."""
+    cfg = state["cfg"]
+    series = state["series"][series_id]
+    origin = state["origins"][fold]
+    history = series[series["date"] <= origin]
+    window_end = origin + pd.Timedelta(days=cfg.test_window)
+    targets = series[(series["date"] > origin) & (series["date"] <= window_end)]
+    if len(history) < cfg.min_train_days or len(targets) < cfg.test_window:
+        return None
+    if cfg.rmsse_scale_window == "per_fold":
+        scale = naive_scale(history["sales"], cfg.rmsse_scale_lag)
+    else:
+        scale = state["scales"][series_id]
+    ctx = Context(
+        history=history,
+        targets=targets.drop(columns=["sales"]),
+        origin=origin,
+        horizon=cfg.horizon,
+        series_id=series_id,
+        season=cfg.season,
+        train_pool=state["pools"][series_id],
+        pool_by=cfg.pool_by,
+        seed=cfg.seed,
+    )
+    in_window = holiday_window(targets).to_numpy(dtype=bool)
+    meta = {
+        "id": series_id,
+        "item_id": series["item_id"].iloc[0],
+        "store_id": series["store_id"].iloc[0],
+        "fold": fold,
+        "origin": origin,
+        "week_kind": "holiday" if in_window.any() else "normal",
+        "scale": scale,
+        "actual": targets["sales"].to_numpy(dtype=float),
+        "dates": targets["date"].to_numpy(),
+        "closure": targets["closure"].to_numpy(dtype=bool),
+        "in_window": in_window,
+    }
+    return ctx, meta
+
+
+def _forecast_rows(ctx: Context, meta: dict, to_run: list[str]) -> list[dict]:
+    rows = []
+    for name in to_run:
+        forecast = np.asarray(ALL_FORECASTERS[name](ctx), dtype=float)[: len(meta["actual"])]
+        for h, (day, a, f, c, w) in enumerate(
+            zip(meta["dates"], meta["actual"], forecast, meta["closure"], meta["in_window"], strict=True), 1
+        ):
+            rows.append(
+                {
+                    "id": meta["id"],
+                    "item_id": meta["item_id"],
+                    "store_id": meta["store_id"],
+                    "fold": meta["fold"],
+                    "origin": meta["origin"],
+                    "week_kind": meta["week_kind"],
+                    "method": name,
+                    "kind": "benchmark" if name in BENCHMARKS else "model",
+                    "horizon": h,
+                    "target_date": day,
+                    "actual": a,
+                    "forecast": f,
+                    "scale": meta["scale"],
+                    "closure": c,
+                    "holiday_window": w,
+                }
+            )
+    return rows
+
+
+def _forecast_task(task: tuple) -> list[dict]:
+    """One task: a fold of one series, or (pooled) a fold of every series."""
+    from src.models import xgboost_model, xgboost_quantile, xgboost_relative
+
+    # Per-fold and per-origin memos belong to this task only: a fresh task
+    # must never reuse a fit, and a long-lived worker must not hoard them.
+    xgboost_model.reset()
+    xgboost_quantile.reset()
+    xgboost_relative.reset()
+
+    state = _STATE
+    series_id, fold = task
+    ids = state["ids"] if series_id is None else [series_id]
+    rows: list[dict] = []
+    for sid in ids:
+        built = _fold_context(sid, fold, state)
+        if built is None:
+            continue
+        ctx, meta = built
+        rows.extend(_forecast_rows(ctx, meta, state["to_run"]))
+    return rows
+
+
+def _first_arima_order(series_id: str):
+    """Choose ARIMA's order for one series on its first scored window, as the serial loop did."""
+    from src.models import arima_model
+
+    state = _STATE
+    for fold in range(len(state["origins"])):
+        built = _fold_context(series_id, fold, state)
+        if built is None:
+            continue
+        ctx, _ = built
+        arima_model.arima_orders.pop(series_id, None)
+        arima_model.fit_predict_arima(ctx)
+        return series_id, arima_model.arima_orders.get(series_id)
+    return series_id, None
+
+
+def _select_arima_orders(state: dict, n_jobs: int, progress: bool) -> dict:
+    orders = {}
+    for sid, order in _map(state, _first_arima_order, state["ids"], n_jobs, progress, desc="arima orders"):
+        if order is not None:
+            orders[sid] = order
+    return orders
+
+
+def _map(state: dict, fn, items: list, n_jobs: int, progress: bool, desc: str):
+    """Apply `fn` to `items` in order, in `n_jobs` worker processes (or in-process when 1)."""
+    n_jobs = min(n_jobs, max(1, len(items)))
+    if n_jobs == 1:
+        _init_worker(state)
+        for item in tqdm(items, desc=desc, disable=not progress):
+            yield fn(item)
+        return
+    import multiprocessing as mp
+
+    from threadpoolctl import threadpool_limits
+
+    # fork, not the 3.14 default forkserver: workers inherit the state
+    # without pickling 50 MB per worker, and a calling script needs no
+    # `__main__` guard. Fork is safe here because the parent runs no
+    # threaded numerics of its own: its libraries are pinned to one
+    # thread before the fork, and tqdm's monitor thread is switched off.
+    tqdm.monitor_interval = 0
+    threadpool_limits(limits=1)
+    # Python warns that forking a process with threads can deadlock; the
+    # only threads here are idle library pools, pinned to one above.
+    warnings.filterwarnings("ignore", message=".*multi-threaded.*fork.*")
+    ctx = mp.get_context("fork")
+    chunksize = max(1, len(items) // (n_jobs * 8))
+    with ctx.Pool(n_jobs, initializer=_init_worker, initargs=(state,)) as pool:
+        for result in tqdm(
+            pool.imap(fn, items, chunksize=chunksize), total=len(items), desc=desc, disable=not progress
+        ):
+            yield result
 
 
 def provenance(cfg: Config, methods: list[str] | None = None) -> str:
