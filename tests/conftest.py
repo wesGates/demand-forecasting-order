@@ -1,10 +1,10 @@
 """
-Shared fixtures: synthetic panels shaped like `step2_data.load_panel`'s output.
+Shared fixtures. Synthetic panels shaped like `step2_data.load_panel`'s output.
 
-The raw M5 files are not part of the repository, so every test here runs on
-synthetic data whose right answer is known by construction. The panel columns
-mirror what the loader attaches - calendar flags, holiday proximity, closure -
-so the harness, features and scoring code run unchanged.
+The raw M5 files are not in the repository, so every test runs on synthetic
+data whose right answer is known by construction. The panel has the columns
+the loader attaches (calendar flags, holiday proximity, closure), so the
+harness, features and scoring code run unchanged.
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ def make_panel(
     seed: int = 0,
 ) -> pd.DataFrame:
     """
-    One item at several stores, each a deterministic weekly shape around its
-    own level, optionally with noise, with holiday-proximity columns computed
-    the way `step2_data.holiday_calendar` documents them.
+    One item at several stores, each a fixed weekly shape around its own
+    level plus noise, with holiday-proximity columns computed the way
+    `step2_data.holiday_calendar` documents them.
     """
     stores = stores or STORES
     rng = np.random.default_rng(seed)
@@ -90,7 +90,7 @@ def make_panel(
 
 @pytest.fixture
 def cfg(tmp_path) -> Config:
-    """A small fold layout with an isolated cache directory."""
+    """A small fold layout with its own cache directory."""
     return Config(
         item_ids=("ITEM",),
         n_folds=4,

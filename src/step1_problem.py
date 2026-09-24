@@ -1,16 +1,11 @@
 """
 Step 1 - Problem definition (FPP §1.6, step 1).
 
-Before any data is touched, FPP §1.3 says the forecasting task must be pinned
-down explicitly: what is being forecast, at what grain, how far ahead, and how
-success is judged. This module is that decision, written down once, in one
-object, so that nothing downstream has to guess and nothing downstream can
-quietly disagree.
-
-Changing the horizon, the fold count, or the data subset should mean editing one
-line here - never hunting through the codebase. Every field below carries a
-comment saying what it does and, where the book has an opinion, which FPP
-section that opinion lives in.
+FPP §1.3 says to pin the forecasting task down before touching data: what is
+forecast, at what grain, how far ahead, how success is judged. This module is
+that decision in one object. Changing the horizon, the fold count or the data
+subset means editing one line here. Each field has a comment on what it does
+and which FPP section applies.
 """
 
 from __future__ import annotations
@@ -20,36 +15,30 @@ from pathlib import Path
 
 import pandas as pd
 
-# Repo root, derived from this file's location. Relative paths in a Config are
-# resolved against it, so the same Config works from the project root, from
-# inside notebooks/, or from anywhere else - no "../data" bookkeeping.
+# Repo root, taken from this file's location. Relative paths in a Config are
+# resolved against it, so a Config means the same thing from the project root
+# or from inside notebooks/.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# The study set: one fast-moving staple across all ten stores. Chosen by the
-# availability screen in step 3 - continuously stocked everywhere (longest zero
-# run 10 days over 1,885 days), so its statistics reflect customer behaviour
-# rather than stocking gaps. Volumes run 15-101 units/day across the ten stores,
-# which is the gradient the model comparison is run against.
+# The study item. One fast-moving staple sold at all ten stores, picked by the
+# availability screen in step 3 (longest zero run 10 days over 1,885 days).
+# Volumes run 15-101 units/day across the stores, and that spread is what the
+# model comparison runs along.
 STUDY_ITEMS = ("FOODS_3_586",)
 
-# Three stores spanning the volume range, for iterating on a model change.
-# Twenty-four fits per method on the tiled layout: a point-model change runs
-# in about fifteen seconds, the quantile model in about a minute, ARIMA in
-# two. The ranking on these three tracks the ranking on all ten; a change
-# that survives here gets one full run, and the full run is what is
-# reported. Use as `Config(**DEV)` or `Config(**DEV, fold_step=1)`.
+# Three stores across the volume range, eight weekly folds. For trying a model
+# change before paying for a full run. A point-model change takes about 2 s
+# here, ARIMA about 30 s. Use as `Config(**DEV)`.
 DEV = dict(item_ids=STUDY_ITEMS, store_ids=("CA_4", "TX_2", "WI_2"), n_folds=8)  # sorted, as Config keeps them
 
 # Columns a model is allowed to pool over. Anything else is a typo.
 POOL_SCOPES = (None, "item_id", "dept_id", "cat_id", "store_id", "state_id")
 
-# How the RMSSE denominator is computed across the walk-forward folds.
-#   "pre_holdout" - one denominator per series, from the whole training period
-#                   before the first scored day. Every fold and every method
-#                   share it, so fold-to-fold numbers are comparable.
-#   "per_fold"    - recomputed from each fold's own training history. Closer to
-#                   a literal reading of a single train/test split, but the
-#                   scale drifts between folds.
+# Where the RMSSE denominator comes from.
+#   "pre_holdout" - one denominator per series, from all training data before
+#                   the first scored day. Shared by every fold and method.
+#   "per_fold"    - recomputed from each fold's own history. Closer to a single
+#                   train/test split, but the scale drifts between folds.
 RMSSE_SCALE_WINDOWS = ("pre_holdout", "per_fold")
 
 
@@ -58,28 +47,28 @@ class Config:
     """
     The complete definition of one forecasting experiment.
 
-    Frozen on purpose. A config that changes halfway through a notebook session
-    is a config you cannot trust when reporting the result. Field-by-field
-    explanations are in the comments beside each field.
+    Frozen on purpose. A config that changes halfway through a notebook
+    session cannot be trusted when the result is reported. Each field has its
+    explanation in the comment beside it.
     """
 
     # ======================================================================
     # What we forecast
     # ======================================================================
 
-    # How many days ahead we forecast. One forecast for each of h = 1..horizon
-    # from a single origin T - FPP writes this ŷ_{T+h|T} (§1.7). Daily rather
-    # than weekly because inventory is consumed day by day, and a weekly total
-    # destroys the weekday pattern that decides *when* a store runs out.
+    # Days ahead. One forecast for each h = 1..horizon from a single origin T,
+    # written ŷ_{T+h|T} in FPP §1.7. Daily because inventory is consumed day
+    # by day, and a weekly total loses the weekday pattern that decides when
+    # a store runs out.
     horizon: int = 7
 
-    # Days scored per fold. Defaults to `horizon` and may never exceed it - see
-    # the safeguard in __post_init__. Not from FPP; from a bug this project has
-    # already had.
+    # Days scored per fold. Defaults to `horizon` and may never exceed it (see
+    # the safeguard in __post_init__). This one comes from a bug the project
+    # already had, not from the book.
     test_window: int | None = None
 
-    # Length of the dominant seasonal cycle, in days. 7 for daily retail. Used
-    # by the seasonal naive benchmark (FPP §5.2), by ETS as its seasonal period
+    # Length of the seasonal cycle in days. 7 for daily retail. Used by the
+    # seasonal naive benchmark (FPP §5.2), by ETS as its seasonal period
     # (§8.3), and as the default RMSSE scaling lag (§5.8).
     season: int = 7
 
@@ -87,64 +76,53 @@ class Config:
     # How we validate
     # ======================================================================
 
-    # Number of walk-forward folds - "time series cross-validation" with a
-    # rolling forecasting origin (FPP §5.10). One origin per fold; the origins
-    # are `fold_step` days apart. 52 folds of 7 days is one full year, about
-    # 20% of the five-year history, and the shortest layout that scores every
-    # season once. 8 folds scored a single spring slice.
+    # Number of walk-forward folds, FPP §5.10's rolling forecasting origin.
+    # One origin per fold, `fold_step` days apart. 52 folds of 7 days is one
+    # full year, about 20% of the five-year history, and the shortest layout
+    # that scores every season once. The book gives no fold count.
     n_folds: int = 52
 
-    # Days between consecutive fold origins.
-    #   7  - origins tile the held-out year with no overlap. Every origin is
-    #        the same weekday (a Sunday here), so h = 1 is always Monday and
-    #        h = 7 always Sunday: the horizon plot mixes horizon with weekday,
-    #        and every claim is a Sunday-order claim.
+    # Days between fold origins.
+    #   7  - origins tile the year with no overlap. Every origin is the same
+    #        weekday (a Sunday here), so every claim is a Sunday-order claim
+    #        and the horizon plot mixes horizon with weekday.
     #   1  - every day is an origin, as FPP's own example does. Origins rotate
-    #        through the week, so the scoreboard averages over all order days
-    #        and the horizon plot is clean. Windows overlap: each day is
-    #        scored once per horizon, so adjacent folds share six of their
-    #        seven days and 364 folds are not 364 independent samples. Seven
-    #        times the fitting cost (about 1 h 45 min for all methods).
-    #   8  - a cheap compromise: origins still rotate through the week, with
-    #        one-day gaps between scored windows.
-    # The step-1 layout is the intended standard for reported numbers; 7 is
-    # kept for quick checks while iterating.
+    #        through the week. Windows overlap, so adjacent folds share six of
+    #        their seven days and 358 folds are not 358 independent samples.
+    #   8  - origins rotate through the week with one-day gaps. Not used.
+    # Step 1 is the reported layout since item 2. Step 7 is for quick checks.
     fold_step: int = 7
 
-    # A series must have at least this many days of history at a fold's origin
-    # or that fold is skipped for it. 365 keeps one full annual cycle in view.
-    # Project decision, not FPP. (The feature module separately needs
-    # `features.MIN_HISTORY` days to fill every lag; that is a much smaller
-    # number and is handled there.)
+    # A series needs at least this many days of history at a fold's origin or
+    # that fold is skipped for it. 365 keeps one annual cycle in view. Project
+    # decision. (The feature module separately needs `features.MIN_HISTORY`
+    # days to fill every lag, a much smaller number.)
     min_train_days: int = 365
 
     # ======================================================================
     # How we score
     # ======================================================================
 
-    # RMSSE divides forecast error by the error of a naive forecast on the
-    # training data, so it is scale-free and comparable across stores (FPP
-    # §5.8). This is the lag of that naive forecast. FPP says: lag 1 for
-    # non-seasonal data, lag m (= `season`) for seasonal data - and this data is
-    # weekly-seasonal, so the default follows the book. None means "use
-    # `season`". The M5 competition used lag 1; set this to 1 for tables that
-    # compare directly against published M5 numbers.
+    # RMSSE divides the forecast error by the error of a naive forecast on the
+    # training data, so it is comparable across stores of different size (FPP
+    # §5.8). This is the lag of that naive forecast. The book says lag 1 for
+    # non-seasonal data and lag m for seasonal data, and this data is weekly
+    # seasonal. None means "use `season`". The M5 competition used lag 1; set
+    # 1 to compare against published M5 numbers.
     rmsse_scale_lag: int | None = None
 
-    # Which training data the RMSSE denominator is computed from, across folds.
-    # FPP §5.8 says "the training set" but its cross-validation section (§5.10)
-    # does not address rolling origins, so this is a project decision. See
-    # RMSSE_SCALE_WINDOWS above for the two options and why "pre_holdout" is
-    # the default.
+    # Which training data the RMSSE denominator comes from. FPP §5.8 says "the
+    # training set" and §5.10 does not say what that means with rolling
+    # origins, so this is a project decision. See RMSSE_SCALE_WINDOWS above.
     rmsse_scale_window: str = "pre_holdout"
 
     # ======================================================================
     # Which data
     # ======================================================================
 
-    # Filters applied before the wide-to-long reshape. Empty tuple / None means
-    # "no filter on this column". Always pass something in interactive work -
-    # the unfiltered panel is ~59 million rows.
+    # Filters applied before the wide-to-long reshape. An empty tuple or None
+    # means no filter on that column. Always pass something in interactive
+    # work; the unfiltered panel is about 59 million rows.
     item_ids: tuple[str, ...] = ()
     store_ids: tuple[str, ...] = ()
     dept_id: str | None = None
@@ -154,26 +132,27 @@ class Config:
     # How we model
     # ======================================================================
 
-    # Which rows a learned model may train on - the cross-learning scope.
+    # Which rows a learned model may train on.
     #   None       -> one model per store-item, trained on that series alone
     #   "item_id"  -> one model per item, trained on all of its stores at once
-    # Wider scopes are accepted and use the same machinery: the model sees every
-    # series in the pool and is handed `store_id` and `item_id` as categorical
-    # features so it can tell them apart. Not an FPP concept - it comes from the
-    # M5 competition, where every winning method pooled. Only None and
-    # "item_id" have been exercised so far.
+    # Wider scopes use the same machinery. The model sees every series in the
+    # pool and gets `store_id` and `item_id` as categorical features to tell
+    # them apart. This comes from the M5 competition, where every winning
+    # method pooled, and the book does not cover it. Only None and "item_id"
+    # have been run so far.
     pool_by: str | None = None
 
     # Whether `sell_price` is offered to the model. Price is known a week ahead
-    # in this dataset, so it is a legitimate predictor in FPP's sense (§7 -
-    # regression with predictors known in advance). Off by default because for
-    # the current study item it takes three values in five years, on the same
-    # two dates at every store, and is constant inside any forecast window - a
-    # clock, not a price. An item whose price actually moves may want it on.
+    # in this dataset, so it is a legitimate predictor in FPP's sense (§7,
+    # predictors known in advance). Off by default. For the study item it
+    # takes three values in five years, on the same two dates at every store,
+    # and never changes inside a forecast window, so it acts as a clock. Tested
+    # on 2026-09-21 and slightly worse with it on. An item whose price moves
+    # may want it back.
     use_price: bool = False
 
 
-    # Fixed so that repeat runs on identical inputs give identical output. The
+    # Fixed so repeat runs on the same inputs give the same output. The
     # validator checks this.
     seed: int = 0
 
@@ -185,8 +164,8 @@ class Config:
     cache_dir: Path = Path("cache")
 
     def __post_init__(self) -> None:
-        # Canonical order, so ("A", "B") and ("B", "A") are one configuration
-        # and one cache key.
+        # Sorted, so ("A", "B") and ("B", "A") are one config and one cache
+        # key.
         object.__setattr__(self, "item_ids", tuple(sorted(self.item_ids)))
         object.__setattr__(self, "store_ids", tuple(sorted(self.store_ids)))
         if self.test_window is None:
@@ -194,12 +173,12 @@ class Config:
         if self.rmsse_scale_lag is None:
             object.__setattr__(self, "rmsse_scale_lag", self.season)
 
-        # --- the non-negotiable safeguard ---------------------------------
-        # Features are lagged by the horizon. If the scored window were longer
-        # than the horizon, the lags for its later days would point at dates
-        # *inside* that window, and the model would be reading the actuals it
-        # is supposed to be predicting. This produced a fabricated result once
-        # already, so it is asserted rather than trusted to convention.
+        # --- the safeguard --------------------------------------------------
+        # Features are lagged by the horizon. A scored window longer than the
+        # horizon would let the lags for its later days point at dates inside
+        # the window, and the model would read the actuals it is supposed to
+        # predict. Known mistake: this produced a fabricated result once, so
+        # it is asserted here.
         if self.test_window > self.horizon:
             raise ValueError(
                 f"test_window ({self.test_window}) must not exceed horizon "
@@ -214,7 +193,7 @@ class Config:
         if self.rmsse_scale_lag < 1:
             raise ValueError("rmsse_scale_lag must be >= 1.")
 
-        # Catch a mistyped option here rather than deep inside a model.
+        # Catch a mistyped option here, before it fails deep inside a model.
         if self.pool_by not in POOL_SCOPES:
             raise ValueError(
                 f"pool_by={self.pool_by!r} is not a poolable column. "
@@ -226,8 +205,9 @@ class Config:
                 f"Use one of: {RMSSE_SCALE_WINDOWS}"
             )
 
-        # Anchor relative paths to the repo root so the working directory
-        # never changes what a Config means. Absolute paths pass through.
+        # Relative paths are anchored to the repo root, so the working
+        # directory does not change what a Config means. Absolute paths pass
+        # through.
         for p in ("data_dir", "cache_dir"):
             value = Path(getattr(self, p))
             if not value.is_absolute():
@@ -238,7 +218,7 @@ class Config:
 
     @property
     def subset(self) -> dict[str, object]:
-        """The data filter, as a plain dict - used for cache keys and captions."""
+        """The data filter as a plain dict, for cache keys and captions."""
         return {
             "item_ids": tuple(self.item_ids),
             "store_ids": tuple(self.store_ids),
@@ -248,31 +228,27 @@ class Config:
 
     def holdout_start(self, last_date):
         """
-        The first date that will ever be scored, given this fold layout.
+        The first date that will ever be scored under this fold layout.
 
-        The last fold ends on the final day of data; earlier folds step back
-        `fold_step` days at a time, so the earliest scored day sits
+        The last fold ends on the final day of data. Earlier folds step back
+        `fold_step` days at a time, so the earliest scored day is
         `(n_folds - 1) * fold_step + test_window` days from the end.
 
-        **This is the single source of truth for that boundary.** Step 3 uses it
-        to make sure no class label is computed from a scored day, and step 5
-        uses it to lay out the folds. If the two ever computed it separately
-        they could drift apart, and a label would silently absorb test data.
+        Step 3 uses this so no class label is computed from a scored day, and
+        step 5 uses it to lay out the folds. Computed in one place so the two
+        cannot drift apart.
         """
         return last_date - pd.Timedelta(days=self.test_days_total - 1)
 
     def fold_origins(self, last_date) -> list:
         """
-        The forecast origin for every walk-forward fold, earliest first.
+        The forecast origin of every walk-forward fold, earliest first.
 
-        Fold k scores the `test_window` days beginning `k * fold_step` days
-        after `holdout_start`, and its origin is the day before the first of
-        those. With `fold_step == test_window` the folds tile the held-out
-        period exactly; with a smaller step they overlap; with a larger one
-        there are gaps. The last fold always ends on the final day of data.
-
-        Shares `holdout_start` with step 3's classification cutoff, so the two
-        cannot drift apart.
+        Fold k scores the `test_window` days that begin `k * fold_step` days
+        after `holdout_start`. Its origin is the day before the first of them.
+        With `fold_step == test_window` the folds tile the held-out period
+        exactly, with a smaller step they overlap, and the last fold always
+        ends on the final day of data.
         """
         start = self.holdout_start(last_date)
         return [
@@ -285,7 +261,7 @@ class Config:
         return (self.n_folds - 1) * self.fold_step + self.test_window
 
     def describe(self) -> str:
-        """Human-readable summary, for the top of a notebook."""
+        """A readable summary for the top of a notebook."""
         if self.pool_by is None:
             scope = "per store-item"
         else:

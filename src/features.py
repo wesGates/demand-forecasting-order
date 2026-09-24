@@ -1,34 +1,29 @@
 """
 Feature engineering.
 
-One rule governs this entire module:
+One rule for the whole module. Every feature for a target day must be
+computable from data available at the forecast origin T.
 
-    **Every feature for a target day must be computable from data available at
-    the forecast origin T.**
+We forecast days T+1 .. T+h from one origin T, written `ŷ_{T+h|T}` in FPP.
+A row for target day T+h may use
+  - sales up to and including day T,
+  - anything known in advance for T+h, like the calendar, SNAP dates and
+    the horizon h.
 
-We forecast days T+1 .. T+h from a single origin T, in FPP's notation
-`ŷ_{T+h|T}`. So a row for target day T+h may use:
+Getting this wrong is leakage. The validation scores look excelent and then
+collapse in production. Known mistake: it happened once on this project, so
+`assert_no_leakage` now checks the dates on every fold.
 
-  - sales up to and including day T, and nothing after it;
-  - anything that is known in advance for T+h - the calendar, SNAP dates, the
-    horizon h itself.
+Origin-based lags. Every row in a fold shares the one origin, the way a
+replenishment run does (stand on Sunday, order for Monday through Sunday).
+The lag columns are therefore identical across the h rows of a fold, and
+`horizon` is what tells them apart, so `horizon` has to be a feature. The
+other scheme, shifting each target day's features by its own horizon, is
+also leak-free but forecasts each day from a different origin and throws
+away up to six days of data the store would actually have.
 
-Getting this wrong is *leakage*, and it produces validation scores that look
-excellent and collapse in production. It has already happened once on this
-project, so `assert_no_leakage` checks it mechanically rather than by reading.
-
-**Why origin-based rather than target-based lags.** A simpler-looking scheme is
-to shift every feature by the horizon and let each target day carry its own
-lags. That is leakage-free too, but it means each target day is forecast from a
-*different* origin, and the first day of the window throws away six days of data
-you would actually have. Here every row in a fold shares one origin, exactly as
-a replenishment run does: stand on Sunday, order for Monday through Sunday.
-
-The consequence is that the lag columns are identical across the h rows of a
-fold, and `horizon` is what distinguishes them - so `horizon` must be a feature.
-
-Lag choices come from the autocorrelation in step 3 rather than convention: the
-weekly harmonics (7, 14, 21, 28) dominate and lag 1 is independently strong.
+The lags come from the autocorrelation in step 3. The weekly harmonics
+(7, 14, 21, 28) dominate and lag 1 is strong on its own.
 """
 
 from __future__ import annotations
@@ -36,33 +31,30 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# Lags measured back from the forecast origin T. Justified by the ACF in step 3.
+# Lags counted back from the origin T. Picked from the ACF in step 3.
 LAGS = (1, 2, 3, 7, 14, 21, 28)
 
-# Rolling windows ending at T - recent level and volatility.
+# Rolling windows ending at T, for the recent level and its spread.
 ROLL_WINDOWS = (7, 28, 56)
 
-# Same-weekday history: the mean of the last k occurrences of the target's
-# weekday, at or before T. The learned version of a seasonal naive forecast,
+# Same-weekday history, the mean of the last k occurrences of the target's
+# weekday at or before T. This is the learned version of the seasonal naive
 # and usually the strongest single feature in daily retail.
 DOW_WINDOWS = (4, 8)
 
 
 # --------------------------------------------------------------------------- #
-# Calendar - known in advance, so safe for any target date
+# Calendar, known in advance, so safe for any target date
 # --------------------------------------------------------------------------- #
 
 
 def calendar_features(rows: pd.DataFrame, use_price: bool = False) -> pd.DataFrame:
     """
-    Features that are known in advance for the target date.
+    Features known in advance for the target date.
 
-    Every one of these is knowable before the day arrives, so none of them can
-    leak: a calendar does not depend on what was sold, and in this dataset the
-    shelf price is set a week ahead.
-
-    Price is opt-in via `Config.use_price` - see that docstring for why it is
-    off for the current study item.
+    None of these can leak. A calendar does not depend on what was sold, and
+    in this dataset the shelf price is set a week ahead. Price is opt-in via
+    `Config.use_price`; that comment says why it is off for the study item.
     """
     out = pd.DataFrame(index=rows.index)
     date = rows["date"]
@@ -74,11 +66,11 @@ def calendar_features(rows: pd.DataFrame, use_price: bool = False) -> pd.DataFra
     out["day_of_year"] = date.dt.dayofyear
     out["snap"] = rows["snap"].astype("int8")
     out["is_event"] = rows["event_name_1"].notna().astype("int8")
-    # Holiday proximity, from step 2's calendar columns. `is_event` above fires
-    # on all 30 calendar events; these three describe only the events that
-    # measurably move the item, and let a model learn the run-up and the
-    # hangover rather than just the day - the run-up to Christmas in this data
-    # is larger than most holidays' own day.
+    # Holiday proximity, from step 2's calendar columns. `is_event` above
+    # fires on all 30 calendar events. These three cover only the events that
+    # measurably move the item and let a model learn the run-up and the
+    # hangover as well as the day. The run-up to Christmas in this data is
+    # larger than most holidays' own day.
     out["is_holiday"] = rows["is_holiday"].astype("int8")
     out["days_to_holiday"] = rows["days_to_holiday"].astype("int16")
     out["days_since_holiday"] = rows["days_since_holiday"].astype("int16")
@@ -88,18 +80,18 @@ def calendar_features(rows: pd.DataFrame, use_price: bool = False) -> pd.DataFra
 
 
 # --------------------------------------------------------------------------- #
-# History - everything here must end at the origin
+# History. Everything here must end at the origin
 # --------------------------------------------------------------------------- #
 
 
-# The holiday-affected window, in days before and after a major event. Shared
-# with step 5's normal/holiday fold split so "holiday-affected" means one
-# thing everywhere.
+# The holiday-affected window in days before and after a major event. Step 5's
+# normal/holiday fold split and the loader's closure fill use the same
+# numbers, so "holiday-affected" means one thing everywhere.
 HOLIDAY_WINDOW_BEFORE, HOLIDAY_WINDOW_AFTER = 2, 1
 
 
 def holiday_window(frame: pd.DataFrame) -> pd.Series:
-    """True for rows inside the holiday-affected window around a major event."""
+    """True for rows inside the holiday window around a major event."""
     return (frame["days_to_holiday"] <= HOLIDAY_WINDOW_BEFORE) | (
         frame["days_since_holiday"] <= HOLIDAY_WINDOW_AFTER
     )
@@ -109,41 +101,34 @@ def history_features(history: pd.DataFrame, target_dates: pd.Series) -> pd.DataF
     """
     Summaries of one series' sales, all ending at the forecast origin.
 
-    Parameters
-    ----------
-    history
-        Rows for a single series, sorted by date, containing **only** dates at
-        or before the origin T. The caller is responsible for that cut; this
-        function trusts it and `assert_no_leakage` verifies it.
-    target_dates
-        The days being forecast. Used only for the same-weekday features, which
-        depend on which weekday is being predicted.
+    `history` holds one series, sorted by date, with only dates at or before
+    the origin T. The caller makes that cut and `assert_no_leakage` verifies
+    it. `target_dates` are the days being forecast and only the same-weekday
+    features look at them.
 
-    Returns
-    -------
-    One row per target date. Lag and rolling columns are constant across those
-    rows by construction - they describe the origin, not the target - which is
-    why `horizon` must also be a feature.
+    Returns one row per target date. The lag and rolling columns describe the
+    origin and so repeat across those rows, which is why `horizon` is also a
+    feature.
     """
     sales = history["sales"].to_numpy(dtype=float)
     n = len(sales)
     out = pd.DataFrame(index=target_dates.index)
 
-    # Lags counted back from the origin: lag_1 is the origin day itself.
+    # Lags counted back from the origin. lag_1 is the origin day itself.
     for k in LAGS:
         out[f"lag_{k}"] = sales[-k] if n >= k else np.nan
 
-    # Level and volatility over windows ending at the origin.
+    # Level and spread over windows ending at the origin.
     for w in ROLL_WINDOWS:
         window = sales[-w:] if n >= 1 else np.array([])
         out[f"roll_mean_{w}"] = window.mean() if len(window) else np.nan
         out[f"roll_std_{w}"] = window.std(ddof=1) if len(window) > 1 else np.nan
 
-    # Trend: is the recent level above or below the longer-run level?
+    # Trend. Is the recent level above or below the longer-run level?
     out["trend_7_56"] = out["roll_mean_7"] / out["roll_mean_56"].replace(0, np.nan) - 1
 
-    # Same-weekday history - the learned seasonal naive. This one genuinely
-    # varies per target day, because each target day has its own weekday.
+    # same-weekday history, the learned seasonal naive. This one varies per
+    # target day because each target day has its own weekday.
     hist_dow = history["date"].dt.dayofweek.to_numpy()
     target_dow = target_dates.dt.dayofweek.to_numpy()
     for k in DOW_WINDOWS:
@@ -163,14 +148,14 @@ def build_fold_features(
     use_price: bool = False,
 ) -> pd.DataFrame:
     """
-    Assemble the feature matrix for one fold of one series.
+    The feature matrix for one fold of one series.
 
-    `history` must already be cut at `origin`; `targets` are the days being
-    forecast. The returned frame carries `horizon` (1..h), which is what
-    separates otherwise identical rows.
+    `history` is already cut at `origin` and `targets` are the days being
+    forecast. The returned frame carries `horizon` (1..h), which separates
+    otherwise identical rows.
     """
-    # The structural check: history must end at or before the origin, and
-    # every target must be after it. Refuses rather than trusts.
+    # The date check. History ends at or before the origin and every target
+    # is after it, or this raises.
     assert_no_leakage(history, targets, origin)
 
     feats = pd.concat(
@@ -195,15 +180,10 @@ def assert_no_leakage(
     """
     Refuse to build features if anything reaches past the forecast origin.
 
-    This is the structural check the project's safeguards call for: it proves
-    the boundary by comparing dates, rather than inferring it statistically from
-    a model's error. A statistical test can only say "this looks suspicious";
-    this says "this row used data from after T", with the date.
-
-    Raises
-    ------
-    ValueError
-        If the history extends past the origin, or any target is not after it.
+    This proves the boundary by comparing dates. A statistical test can only
+    say "this looks suspicious"; this says which row used data from after T,
+    with the date. Raises ValueError if the history extends past the origin
+    or any target is at or before it.
     """
     if len(history):
         latest = history["date"].max()
@@ -224,15 +204,14 @@ def assert_no_leakage(
 # The supervised training matrix
 # --------------------------------------------------------------------------- #
 
-# Shortest history that can fill every feature. Derived from the window
-# constants rather than typed in, so lengthening a window above cannot leave
-# this silently too small - which would put NaN features in the first rows
-# with no error to say so.
+# Shortest history that fills every feature. Derived from the window constants
+# so a longer window above cannot leave this too small, which would put NaN
+# features in the first rows with no error.
 MIN_HISTORY = max(max(LAGS), max(ROLL_WINDOWS), 7 * max(DOW_WINDOWS))
 
 # Bump whenever the feature definitions above change. Step 5 caches each
-# series' supervised matrix to parquet keyed on this, so an edited feature
-# cannot silently be served from a file built by the old definition.
+# series' supervised matrix keyed on this, so an edited feature is never
+# served from a file built by the old definition.
 FEATURE_VERSION = 2  # v2: holiday proximity (is_holiday, days_to/since_holiday)
 
 
@@ -242,21 +221,17 @@ def build_supervised(
     use_price: bool = False,
 ) -> pd.DataFrame:
     """
-    Every (origin, horizon) pair for one series, as a supervised learning table.
+    Every (origin, horizon) pair of one series as a supervised learning table.
 
-    Walks the series day by day. At each origin it builds the same features a
-    real forecast would have, and attaches the target that actually occurred.
-    Built once per series and then sliced per fold, so the cost is paid once.
+    Walks the series day by day. At each origin it builds the features a real
+    forecast would have and attaches the target that actually occurred. Built
+    once per series and sliced per fold.
 
-    The returned frame carries `origin_date` and `target_date` alongside the
-    features. Those two columns are what make leak-free training mechanical:
-
-      - a row may be **trained on** only if its `target_date` is at or before
-        the fold's origin, because only then was the answer observable;
-      - a row is **predicted** when its `origin_date` equals the fold's origin.
-
-    Both filters are pure date comparisons, which is the point - there is no
-    step where a human has to reason about which rows are safe.
+    The frame carries `origin_date` and `target_date` beside the features.
+    Those two columns make leak-free training a pair of date comparisons.
+      - A row may be trained on only if its `target_date` is at or before the
+        fold's origin, because only then was the answer observable.
+      - A row is predicted when its `origin_date` equals the fold's origin.
     """
     series = series.sort_values("date").reset_index(drop=True)
     frames = []
@@ -277,10 +252,10 @@ def build_supervised(
         frames.append(feats)
 
     if not frames:
-        # Too short to hold even one origin. FPP §13.6: there is no magic
-        # minimum, but a model needs more rows than parameters, and a series
-        # this short gets none. An empty matrix with the right columns lets
-        # the harness skip the series instead of aborting the whole run.
+        # Too short for even one origin. FPP §13.6 says there is no magic
+        # minimum, only that a model needs more rows than parameters; a series
+        # this short gives it none. An empty matrix with the right columns
+        # lets the harness skip the series. Before this the whole run died.
         frames.append(
             build_fold_features(
                 series, series.iloc[0:0], series["date"].iloc[-1], use_price=use_price
@@ -293,8 +268,8 @@ def build_supervised(
     return out
 
 
-# Identity columns. Bookkeeping for a per-series model; features for a pooled
-# one, where the model needs them to tell the series in its pool apart.
+# Identity columns. Bookkeeping for a per-series model and features for a
+# pooled one, which needs them to tell the series in its pool apart.
 POOL_ID_COLS = ("store_id", "item_id")
 
 NON_FEATURE_COLS = (
@@ -312,12 +287,12 @@ def supervised_feature_columns(
     pool: pd.DataFrame, pool_by: str | None = None
 ) -> list[str]:
     """
-    Model input columns from a supervised matrix.
+    The model input columns of a supervised matrix.
 
-    `pool_by` is `Config.pool_by`. When it is None the model sees one series and
-    identity columns would be constant, so they are left out. When it is set
-    the pool spans several series and identity becomes a feature - handed over
-    as native categoricals by the model code.
+    `pool_by` is `Config.pool_by`. With None the model sees one series and
+    the identity columns would be constant, so they are left out. With a pool
+    the identity columns become features, handed over as categoricals by the
+    model code.
     """
     cols = [c for c in pool.columns if c not in NON_FEATURE_COLS]
     return [*cols, *POOL_ID_COLS] if pool_by is not None else cols

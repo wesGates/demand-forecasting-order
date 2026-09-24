@@ -1,48 +1,43 @@
 """
 Step 3 - Preliminary exploratory analysis (FPP §1.6, step 3).
 
-FPP is blunt about this: *always start by graphing the data*. Nothing here fits
-a model. It answers the questions §1.6 says to ask before modelling - is there a
-pattern, a trend, seasonality, outliers, relationships between variables - and
-adds the one measurement this project is built around.
+FPP says to always start by graphing the data. Nothing here fits a model.
+It answers the questions §1.6 asks before modelling (pattern, trend,
+seasonality, outliers, relationships between variables) and adds the one
+measurement this project is built around.
 
-**Classifying demand.** "Sporadic and inconsistent" is a judgement until you
-measure it. The standard measurement (Syntetos & Boylan) is two numbers:
+Classifying demand. "Sporadic and inconsistent" is a judgement until it is
+measured. The standard measurement (Syntetos & Boylan) is two numbers.
 
-  ADI  - average demand interval: days divided by days with a sale.
-         "How *often* does it sell?"  High ADI = sporadic.
+  ADI  - average demand interval, days divided by days with a sale.
+         How often does it sell? High ADI means sporadic.
   CV²  - squared coefficient of variation of the non-zero sale sizes.
-         "When it does sell, how *consistent* is the amount?"  High CV² =
+         When it sells, how consistent is the amount? High CV² means
          inconsistent.
 
-Cut each at its conventional threshold and you get four quadrants:
+Cut each at its conventional threshold and you get four quadrants.
 
                  CV² < 0.49          CV² >= 0.49
     ADI <  1.32   smooth              erratic
     ADI >= 1.32   intermittent        lumpy
 
-A caution worth carrying into any discussion of this: 1.32 and 0.49 are
-conventions derived from one comparison of forecasting methods, not laws of
-nature. A series at ADI 1.31 is not meaningfully different from one at 1.33.
-Treat the numbers as continuous and the quadrants as labels of convenience -
-which is why `plot_demand_class_map` shows the cloud, not just the buckets.
+1.32 and 0.49 are conventions from one comparison of forecasting methods. A
+series at ADI 1.31 is no different from one at 1.33. Treat the numbers as
+continuous and the quadrants as labels of convenience; `plot_demand_class_map`
+shows the whole cloud for that reason.
 
-**Availability comes before intermittency.** A long unbroken block of zero
-sales is not sporadic demand - it usually means the item was not on the shelf.
-M5 has no inventory data, so the two are indistinguishable from sales alone, and
-the pre-launch price trim cannot catch them (these days *have* a price on file).
-Left in, they inflate ADI exactly like genuine intermittency and the
-classification ends up measuring stocking gaps instead of customer behaviour.
+Availability comes before intermittency. A long block of zero sales usually
+means the item was off the shelf. M5 has no inventory data, so stock-outs
+and sporadic demand look the same in the sales column, and the pre-launch
+price trim cannot catch them (these days do have a price on file). Left in,
+they inflate ADI exactly like real intermittency. `max_zero_run` measures
+this so a series can be screened, with a stated criterion, before anything
+is modelled.
 
-`max_zero_run` measures this so series can be *screened* rather than silently
-repaired. That is deliberate: a screen states a selection criterion you can
-defend, where a trim would need an arbitrary threshold baked into the pipeline
-and would punch gaps into series that lag features would then reach across.
-
-**These are computed on training data only.** The class label is part of the
-reported result, so it must not be informed by any day the model is scored on.
-`classification_cutoff` returns the first scored date across all folds, and
-everything at or after it is excluded.
+Everything here is computed on training data only. The class label is part
+of the reported result, so no scored day may inform it.
+`classification_cutoff` returns the first scored date and everything at or
+after it is excluded.
 """
 
 from __future__ import annotations
@@ -54,14 +49,14 @@ import pandas as pd
 
 from src.step1_problem import Config
 
-# Syntetos-Boylan cut points. Conventions, not laws - see the module docstring.
+# Syntetos-Boylan cut points. Conventions; see the module docstring.
 ADI_CUT = 1.32
 CV2_CUT = 0.49
 
-# Availability screen: a zero run longer than this triggers a warning. Chosen
-# from the screen in step 3 - a genuinely fast-moving item never posts a month
-# of zeros, while the median FOODS_3 series has an 83-day run. Anything past 30
-# is far more likely to be "not on the shelf" than "nobody wanted it".
+# Availability screen. A zero run longer than this triggers a warning. A
+# fast-moving item never posts a month of zeros, while the median FOODS_3
+# series has an 83-day run. Past 30 days "off the shelf" is far more likely
+# than "nobody wanted it".
 MAX_ZERO_RUN_WARN = 30
 
 # Every label `demand_class` can return, including the refusal case.
@@ -70,11 +65,11 @@ DEMAND_CLASSES = ("smooth", "erratic", "intermittent", "lumpy", "unclassifiable"
 
 def classification_cutoff(df: pd.DataFrame, cfg: Config) -> pd.Timestamp:
     """
-    First date that will ever be scored, across every walk-forward fold.
+    The first date that will ever be scored, across every fold.
 
-    Delegates to `Config.holdout_start` so step 3 and step 5 can never disagree
-    about where the held-out window begins. Anything on or after this date is
-    off-limits for computing a class label.
+    Delegates to `Config.holdout_start`, so step 3 and step 5 agree on where
+    the held-out window begins. Nothing on or after this date may enter a
+    class label.
     """
     return cfg.holdout_start(df["date"].max())
 
@@ -90,11 +85,10 @@ def demand_class(adi: float, cv2: float) -> str:
 
 def max_zero_run(sales: np.ndarray) -> int:
     """
-    Longest unbroken stretch of zero-sales days.
+    The longest unbroken stretch of zero-sales days, the availability screen.
 
-    The availability screen. A fast-moving grocery item that genuinely sells
-    every day should never post a two-week zero run; if it does, it was almost
-    certainly unavailable rather than unwanted.
+    A fast-moving grocery item that sells every day should never post a
+    two-week zero run. If it does, it was almost certainly unavailable.
     """
     best = current = 0
     for is_zero in sales == 0:
@@ -108,8 +102,8 @@ def _series_row(sales: np.ndarray) -> dict[str, float]:
     n = len(sales)
     nonzero = sales[sales > 0]
 
-    # CV² needs at least two sales to have any spread to measure. A series with
-    # zero or one sale in the window gets no label rather than a fabricated one.
+    # CV² needs at least two sales to have a spread to measure. A series with
+    # zero or one sale in the window gets no label.
     if len(nonzero) < 2:
         return {
             "adi": np.inf if len(nonzero) == 0 else n / len(nonzero),
@@ -124,10 +118,10 @@ def _series_row(sales: np.ndarray) -> dict[str, float]:
 
 def series_stats(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """
-    One row per series: size, sparsity, ADI, CV², and demand class.
+    One row per series with size, sparsity, ADI, CV² and demand class.
 
-    Computed strictly on data before `classification_cutoff`, so no scored day
-    contributes to a label that will later appear in the results table.
+    Computed on data before `classification_cutoff` only, so no scored day
+    contributes to a label that later appears in the results table.
     """
     cutoff = classification_cutoff(df, cfg)
     train = df[df["date"] < cutoff]
@@ -155,8 +149,8 @@ def series_stats(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     ]
 
     # The screen is only useful if it speaks up. A long dead block inflates ADI
-    # exactly like real intermittency, so a class label built on one is
-    # measuring shelf availability, not demand - say so before it gets modelled.
+    # like real intermittency, and a class label built on one measures shelf
+    # availability. Say so before it gets modelled.
     flagged = out[out["max_zero_run"] > MAX_ZERO_RUN_WARN]
     if not flagged.empty:
         worst = flagged.sort_values("max_zero_run", ascending=False).head(5)
@@ -178,20 +172,20 @@ def event_effects(
     df: pd.DataFrame, calendar: pd.DataFrame, cutoff: pd.Timestamp | None = None
 ) -> pd.DataFrame:
     """
-    How much each calendar event moves sales, relative to a same-weekday
-    baseline - the evidence behind `step2_data.MAJOR_EVENTS`.
+    How much each calendar event moves sales relative to a same-weekday
+    baseline. The evidence behind `step2_data.MAJOR_EVENTS`.
 
     For every event occurrence and every store, sales on the day (and on the
     two days before and the day after) are divided by the mean of the same
     weekday in the four weeks either side, skipping any week whose matching
     day is itself an event. The ratios are averaged over stores and years.
+    Two-sided weeks are fine here because this is a measurement on the
+    training period, not a forecast.
 
     A ratio of 1.70 means the day ran 70% above an ordinary same-weekday. A
-    closure day (Christmas) is NaN on the day: the stores were shut and the
-    loader imputed the value, so there is no demand to measure - its run-up is
-    what counts. One table, sorted by the size of the effect, is what settles
-    "which holidays matter for this item" - the alternative is to assert a
-    list and hope.
+    closure day (Christmas) is NaN on the day, since the stores were shut and
+    the loader filled the value; its run-up is what counts. One table sorted
+    by the size of the effect settles which holidays matter for this item.
     """
     events = pd.concat(
         [
@@ -206,14 +200,14 @@ def event_effects(
         ]
     ).sort_values("date")
     event_days = set(events["date"])
-    # `cutoff`: the first scored day. Which events become features is a
+    # `cutoff` is the first scored day. Which events become features is a
     # modelling choice, and a choice made on the test period would be
     # selection on the test set (FPP §5.8). Pass `classification_cutoff`.
     if cutoff is not None:
         df = df[df["date"] < cutoff]
     wide = df.pivot(index="date", columns="id", values="sales")
-    # A closure day's sales were imputed by the loader (see step 2). It has no
-    # demand to measure, so it must not appear as "ratio 1.0" here.
+    # A closure day's sales were filled by the loader (see step 2). There is
+    # no demand to measure, so it must not show up here as "ratio 1.0".
     if "closure" in df:
         shut = df.loc[df["closure"], "date"].unique()
         wide.loc[wide.index.isin(shut)] = np.nan
@@ -250,7 +244,7 @@ def event_effects(
 
 
 def class_table(stats: pd.DataFrame) -> pd.DataFrame:
-    """Item x store grid of demand classes - the study design at a glance."""
+    """The item x store grid of demand classes, the study design at a glance."""
     return stats.pivot(index="item_id", columns="store_id", values="demand_class")
 
 
