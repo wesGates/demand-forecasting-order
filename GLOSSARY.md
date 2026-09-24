@@ -248,7 +248,16 @@ skipping days inside a holiday window. Weeks after the closure are never
 used: Christmas 2015 sits inside the scored year, and a value borrowed from
 January 2016 would have entered the lags, the training rows and the
 seasonal naïve of every fold with an origin in the following four weeks
-(FPP §5.10; the closure-as-missing case is §13.7). `CACHE_VERSION` 3.
+(FPP §5.10). What the book itself says (§13.7): for a store closed on a
+public holiday, set the day to zero and give an ARIMA dummies for the day
+and the day after; for an outlier, replace it by two-sided interpolation.
+Both are data preparation before a fit, not steps inside a rolling
+evaluation, and the zero would sit in every lag, rolling mean and ETS
+fit here. The backward rule is the compromise: the book's estimate,
+restricted to the past. Two-sided filling would be legitimate for the
+four Christmases before the scored year; one rule was kept for
+simplicity, and the refit put the whole choice in the third decimal.
+`CACHE_VERSION` 3.
 
 **Events are chosen before the cutoff.** `event_effects(df, calendar,
 cutoff)` measures each event on the data before the first scored day, so
