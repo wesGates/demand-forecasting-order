@@ -19,7 +19,12 @@ pd.set_option("display.width", 220)
 rows = []
 scales = []
 for _, r in new.iterrows():
-    match = old[(old["method"] == r["method"]) & (old["config_json"] == r["config_json"])]
+    def same_config(a, b):
+        """Equal on every field both configs have; a field removed since (mask_holidays) does not count."""
+        ja, jb = json.loads(a), json.loads(b)
+        return all(ja[k] == jb[k] for k in ja.keys() & jb.keys())
+
+    match = old[(old["method"] == r["method"]) & old["config_json"].map(lambda c: same_config(c, r["config_json"]))]
     if match.empty:
         continue
     a = pd.read_parquet(Path("cache/predictions") / match.iloc[0]["cache_file"])
