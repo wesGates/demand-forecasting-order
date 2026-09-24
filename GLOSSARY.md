@@ -1,156 +1,147 @@
 # Glossary
 
-Terms that the findings files, `PLAN.md` and the validator output use
-without stopping to explain. Each entry says what the thing is, why it is
-there, and where in the code it lives.
+Terms the findings, the plan and the validator use without explaining.
+Each entry says what the thing is, why it exists, and where it lives.
 
 ## Origin, fold, layout
 
 **Origin.** The day a forecast is made from. The forecaster sees every day
 up to and including the origin and forecasts the next seven. A store
-placing an order on Sunday evening is standing at a Sunday origin.
+placing an order on Sunday evening stands at a Sunday origin.
 
 **Fold.** One origin plus its seven target days, for one series. Scoring a
 fold means comparing the seven forecasts with what sold.
 
-**Weekly layout ("tiled", `fold_step=7`).** Origins seven days apart, so the
-52 folds of the scored year sit end to end without overlap. Fast, and the
-layout the first study used. Its flaw: every origin falls on the same
-weekday.
+**Weekly layout (`fold_step=7`).** Origins seven days apart, 52 folds in
+the scored year, no overlap. Fast, and the first study's layout. Every
+origin falls on the same weekday, which turned out to matter (item 2).
 
 **Every-day layout (`fold_step=1`).** Every day of the scored year is an
-origin (358 of them), so folds overlap and the origin weekday rotates. The
-reported layout since item 2. Cost: about seven times the fitting.
+origin, 358 of them, so folds overlap and the weekday rotates. The
+reported layout since item 2. About seven times the fitting.
+
+**Suite.** A named layout a change is scored on: `dev`, `weekly`,
+`everyday` in `src/suites.py`. The item, the pooling and the method are
+chosen per run. Two runs on the same suite are comparable.
 
 ## The cache
 
-**What it is.** Every forecast a method produces is written once to
+**What it is.** Every forecast a method makes is written once to
 `cache/predictions/<method>_<digest>.parquet`, one row per series, origin,
-method and day ahead, with the actual and the RMSSE scale beside it. A JSON
-file with the same name records the configuration and the code digest the
-run was made under.
+method and day ahead, with the actual, the RMSSE scale and a fallback
+flag beside it. A JSON file with the same name records the config and the
+code digest the run was made under.
 
-**The key.** The digest in the file name is a hash of three things: the
-configuration (every `Config` field except file paths), the method's name,
-and a digest of the code the method depends on (the harness, the shared
-base, the method's own module, `features.py`, `step2_data.py`, and the
-feature and loader version numbers). Change any of those and the key
-changes; the old file stays, a new one is written on the next run. Code is
-hashed as its syntax tree with docstrings removed, so editing a comment does
-not invalidate a run and editing logic does. (`_method_cache_path` and
-`_method_code` in `src/step5_evaluate.py`.)
+**The key.** The digest in the file name hashes the config (every `Config`
+field except file paths), the method's name, and the code the method
+depends on (the harness, the shared base, the method's own module,
+`features.py`, `step2_data.py`, `step1_problem.py`, and the feature and
+loader version numbers). Change any of those and the key changes; the old
+file stays and a new one is written on the next run. Code is hashed as a
+syntax tree with docstrings removed, so a comment edit does not invalidate
+a run and a logic edit does. (`_method_cache_path`, `_method_code` in
+`src/step5_evaluate.py`.)
 
-**"Cache equals code."** The claim that a cached file contains exactly what
-the current code would produce if run again. The key guarantees it when the
-key matches; the from-scratch refit (below) tests it directly.
+**Cached runs are checked against the data.** The key names the config and
+the code. On every read the harness compares the cached actuals with the
+panel's sales, and any difference is an error. Without that, a changed
+data file would get old forecasts served back.
 
-**From-scratch refit.** Running a method with `use_cache=False`, so every
-fold is fitted again, and comparing the result to the cached file row by
-row. Done 2026-09-23 for the per-store and pooled XGBoost on the weekly
-layout: 3,640 forecasts each, identical to the cache.
+**"Cache equals code."** The claim that a cached file holds what the
+current code would produce. The key guarantees it when the key matches;
+a from-scratch refit tests it directly (`tools/recompute_check.py`).
 
-**Re-keying.** After a change that provably alters no forecast (a table
-moved, scoring code split into its own module), cached files can be copied
-to the key the new code computes instead of refitting. Allowed only for such
-changes; a script for it is kept outside the repository.
+**Refit.** Running a method with `use_cache=False` so every fold is fitted
+again. `tools/refit_all.py` refits every reported configuration and
+registers each run under a note; `tools/compare_forecasts.py` then says,
+forecast by forecast, what changed.
 
 ## The validator's negative controls
 
-The validator (`python -m src.validate`) runs ten checks. Two of them are
-*negative controls*: tests on synthetic data where the right answer is known
-and any model that does "too well" must be cheating.
+`python -m src.validate` runs ten checks. Three of them run on synthetic
+data where the right answer is known, so a model that does too well must
+be cheating.
 
-**Synthetic panel.** Six made-up series, 1,000 days each: a level, a weekly
-shape, a slow trend, and Gaussian noise with a chosen standard deviation
-(`noise_sd`, 2.0). Everything except the noise is a deterministic function
-of the date. (`_synthetic_panel` in `src/validate.py`.)
+**Synthetic panel.** Six made-up series, 1,000 days each: a level, a
+weekly shape, a slow trend, and Gaussian noise with a chosen standard
+deviation (2.0). Everything except the noise is a fixed function of the
+date. (`_synthetic_panel` in `src/validate.py`.)
 
-**Noise floor.** Because the only unpredictable part of the synthetic series
-is the noise, the best possible RMSE is the noise's own standard deviation.
-The check runs the real walk-forward on the panel and divides the observed
-RMSE by that floor. A ratio meaningfully below 1 (the threshold is 0.90)
-means the model saw the future: some feature is reaching past the origin.
-A ratio at or above 1 is a pass. The ratios reported on 2026-09-23 were
-1.17 for every-day origins and 1.12 for the pooled model.
+**Noise floor.** The only unpredictable part of the synthetic series is the
+noise, so the best possible RMSE is the noise's own standard deviation.
+The check runs the walk-forward on the panel and divides the observed RMSE
+by that floor. A ratio below 0.90 means some feature saw the future. The
+ratios on 2026-09-23 were 1.17 for every-day origins and 1.12 for the
+pooled model.
 
-**Shuffled target.** The same panel with the sales values scrambled, so
-there is no pattern left to learn. The check compares the model's RMSE with
-a mean-predicting benchmark's. A model that beats the benchmark on noise is
-learning from something it should not have. Ratios of 1.00 (pass) were
-reported for both the every-day and the pooled setting. The benchmark must
-be mean-based: against the seasonal naïve this test fires on a healthy
-pipeline, because the seasonal naïve is about 1.4 times worse than the mean
-on pure noise.
+**Shuffled target.** The same panel with the sales scrambled, so there is
+no pattern to learn. A model that beats a mean-predicting benchmark on
+noise is learning from something it should not see. The benchmark has to
+be mean-based; the seasonal naïve is about 1.4 times worse than the mean
+on pure noise, so against it a healthy pipeline would look like a leak.
 
-**Layouts and pooling.** Both controls repeated under the two settings the
-default checks do not exercise: every day an origin (overlapping windows)
-and one model pooled across series. A leak that only opens when windows
-overlap, or when other series' rows join the training set, is caught here.
-(`check_layouts_and_pooling`.)
+**Layouts and pooling.** Both controls repeated with every day an origin
+and with the model pooled across series, the two settings the default
+checks do not exercise. (`check_layouts_and_pooling`.)
+
+**Harness parity.** The real harness run in-process and with three
+workers on the synthetic panel, per series and pooled. The forecasts must
+be identical.
 
 ## Pooling
 
 **Per-store model.** One XGBoost per series (store and item), trained on
-that series' rows only. The first study's design.
+that series' rows only.
 
-**Pooled model (`pool_by="item_id"`).** One XGBoost per origin for the whole
-item, trained on all ten stores' rows at once, with store identity as a
+**Pooled model (`pool_by="item_id"`).** One XGBoost per origin for the
+whole item, trained on all ten stores' rows with store identity as a
 feature. It learns the weekly and holiday shape from ten stores' worth of
-history and applies it to each. Item 3.
+history. Item 3.
 
 **Pool membership.** The set of series whose rows the pooled model trains
-on: here, the ten store series of one item. It is part of the memo key
-(below), so a model trained on a different set of stores is a different
-model.
+on. Part of the memo key, so a model trained on a different set of stores
+is a different model.
 
 **One fit per origin.** A pooled model is the same model for every store at
-a given origin, so it should be fitted once per origin and reused ten
-times. The first pooled run fitted it ten times per origin, because the
-harness asks for forecasts store by store. The fix is a memo keyed on
-(pooling field, origin, pool membership, parameter overrides): the first
-store at an origin fits the model; the other nine reuse it.
-(`_pooled_models` in `src/models/xgboost_model.py`; `reset_run_state()`
-clears it between runs.) Run time fell from ten fits per origin to one, 16
-minutes for 358 origins.
+a given origin, so it is fitted once and reused ten times. The first
+pooled run fitted it ten times per origin because the harness asks for
+forecasts store by store; a memo keyed on (pooling field, origin, pool
+membership) fixed that. (`_pooled_models` in `src/models/xgboost_model.py`.)
 
 **No leakage across stores.** Pooling adds other stores' rows to the
 training set. Each row carries the date its target was observed, and the
-training set is filtered to rows whose target date is at or before the
-origin, with an assertion right after (`design()` in
-`src/models/xgboost_model.py`). The validator's pooling control tests the
-same thing empirically.
+training set keeps only rows whose target date is at or before the origin,
+with an assertion right after (`design()` in `src/models/xgboost_model.py`).
+The pooling control tests the same thing on synthetic data.
 
 ## The level-relative target
 
-**Level.** The recent average sales of a series: here, the mean of the 28
-days before the origin (`roll_mean_28`, a feature every row already
-carries, computed at the row's own origin).
+**Level.** The recent average of a series. Here it is the mean of the 28
+days before the origin (`roll_mean_28`, a feature every row carries,
+computed at the row's own origin).
 
-**Plain target.** The trees are trained to predict sales directly. A tree
-model predicts from leaves grown on the values it saw in training, so it
-cannot predict a value outside that range. On an item whose sales fall
-over time, the forecast stays where the history was. Item 4 measured this:
-60% over-forecast on a declining item.
+**Plain target.** The trees predict sales directly. A tree predicts from
+leaves grown on the values it saw in training, so it cannot predict a
+value outside that range. On an item whose sales fall over time the
+forecast stays where the history was. Item 4 measured a 60% over-forecast
+on FOODS_1_021.
 
-**Level-relative target (`xgboost_rel`).** The trees are trained to predict
-*sales minus the level at the origin*, and the forecast is that prediction
-plus the level, clipped at zero. The level is carried by the last four
-weeks of data, which move with the item; the trees learn only the weekly,
-holiday and calendar shape around it. Every feature and setting is
-otherwise the same as the plain model. (`src/models/xgboost_relative.py`.)
-Item 5: on the declining item the pooled model's RMSSE fell from 0.570 to
-0.500, level with the best simple methods; on the fast mover from 0.621 to
-0.612, the best of any method.
+**Level-relative target (`xgboost_rel`).** The trees predict sales minus
+the level at the origin, and the forecast is that prediction plus the
+level, clipped at zero. The last four weeks carry the level and the trees
+learn the weekly, holiday and calendar shape around it. Exponential
+smoothing tracks a level by construction (FPP §8.1), which is why ETS never
+had this problem. Item 5.
 
 ## Scores
 
 **RMSSE.** Root mean squared error of a fold divided by the root mean
-squared error the seasonal naïve forecast made on the series' training
-data (FPP §5.8). 1.0 means no better than repeating last week's same
-weekday; 0.8 means 20% better. The denominator belongs to the series, so a
-100-unit store and a 15-unit store are comparable.
+squared error the seasonal naïve made on the series' training data (FPP
+§5.8). 1.0 means no better than repeating last week's same weekday; 0.8
+means 20% better. The scale belongs to the series, so a 100-unit store and
+a 15-unit store compare.
 
-**Bias.** Mean of forecast minus actual, in units per day. Positive means
+**Bias.** Mean of forecast minus actual, in units a day. Positive means
 over-forecasting. Reported beside RMSSE because a symmetric error score
 cannot show a forecast that runs high every day.
 
@@ -158,129 +149,98 @@ cannot show a forecast that runs high every day.
 which a method's RMSSE is below a benchmark's on the same series and
 window. The win rate is the share of folds where it is below at all; the
 quartiles describe the spread. The lower quartile says how much a method
-improves in its worst quarter of folds, which a mean hides.
+improves in its worst quarter of folds.
 
 **Normal and holiday weeks.** Every fold is labelled by whether a major
-calendar event falls within its window (two days before to one day after),
-and every table is reported for both kinds, because a pooled number cannot
-say where a method's advantage came from.
+calendar event falls in its window (two days before to one day after),
+and every table is reported for both kinds.
 
-## Provenance
+**Unscored fold.** A fold whose forecast is missing or whose RMSSE scale
+is zero or NaN. Counted in `n_unscored` and left out of every average and
+every paired comparison. The old code scored these as infinity, which made
+a method's mean RMSSE infinite after one such fold.
 
-**Provenance block.** The header of every findings file since item 3:
-branch, commit, the configuration line that rebuilds the run, and the cache
-file each method's forecasts were read from. Printed by
-`step5_evaluate.provenance()` at run time, so the branch and commit are
-those of the run, not of the write-up. Anyone can check out the commit,
-rebuild the configuration, and either read the same cache file or refit and
-compare.
-
-**DEV preset.** `Config(**DEV)`: three stores, eight folds, weekly layout.
-About twenty seconds for XGBoost, for iterating on a model change before
-paying for a full run.
+**Fallback.** A forecaster that cannot fit a fold (a failed ETS or ARIMA
+estimation) returns the 28-day mean and says so through
+`base.note_fallback`. The harness records `fallback` on every row of that
+forecast and the tables count them (`n_fallback`). A method that won on
+fallbacks is visible as such. No fallback occurred in the item 8 refit.
 
 ## The run registry
 
 **Run registry.** `cache/registry.sqlite`, one row per cached run in `run`
 and one row per store-origin in `fold_score`, built from the cache and git
-by `src/registry.py`. It answers "which runs exist, at what commit, and how
-did they score" without reading the cache. Rebuilt with `python -m
-src.registry backfill`; never edited by hand.
+by `src/registry.py`. It answers which runs exist, at what commit, and how
+they scored, without reading the cache. Rebuilt with
+`python -m src.registry backfill`; never edited by hand. A run is recorded
+once; recording it again appends the note and keeps the first row's time
+and commit.
 
-**Suite.** A named, fixed layout a change is scored on (`dev`, `weekly`,
-`everyday` in `src/suites.py`). The item, the pooling and the method are
-chosen per run; the suite pins folds and stores so that two runs are
-comparable.
-
-**Predecessor.** The most recent earlier run of the same method on the same
-suite, item, stores and pooling. `python -m src.registry last <run_id>`
-compares a run with it.
+**Predecessor.** The most recent earlier run of the same method and the
+same full config. `python -m src.registry last <run_id>` compares a run
+with it.
 
 **Paired comparison.** Two runs compared on the store-origins they share:
 for each, the percentage by which B's RMSSE is below A's. Reported as B's
-win rate and the quartiles of that percentage. A change inside the
-fold-to-fold noise shows a win rate near 50% and a median near zero.
+win rate and the quartiles of that percentage, with the count of pairs
+where A's RMSSE was zero and the percentage is undefined. A change inside
+the fold-to-fold noise shows a win rate near 50% and a median near zero.
 
-## The parallel harness (item 7)
+**`code_current`.** Whether a run's code digest is what the code computes
+now for that method. A snapshot; `python -m src.registry refresh`
+recomputes it after a code change.
+
+## The parallel harness
 
 **Task.** The unit of work handed to a worker process: one fold of one
-series when models fit per series; one fold of *every* series when they
-pool (a pooled model is fitted once per origin and shared by the stores, so
-the stores sit in the same process). Each task rebuilds the same `Context`
-the serial loop built, runs every requested method on it, and returns the
-rows. (`_forecast_task` in `src/step5_evaluate.py`.)
+series when models fit per series, or one fold of every series when they
+pool, because a pooled model is fitted once per origin and shared. Each
+task rebuilds the same `Context` the serial loop built, runs every
+requested method on it, and returns the rows. (`_forecast_task` in
+`src/step5_evaluate.py`.)
 
 **One thread per fit.** XGBoost runs with `n_jobs=1` and every numerical
-library is pinned to one thread inside each worker (`threadpoolctl`).
-Speed comes from running many single-threaded fits at once, not from
-threads inside a fit: on this machine that is about 8× faster for XGBoost
-and 6× for ARIMA than the old all-cores-per-fit setting, because these fits
-are too small to use twenty threads well. It also makes the forecasts
-independent of how many cores the machine has, which the old setting was
-not (XGBoost's floating-point sums depend on the thread count).
+library is pinned to one thread inside each worker. Speed comes from
+running many single-threaded fits at once. On this machine that is about
+8× faster for XGBoost and 6× for ARIMA than the old all-cores-per-fit
+setting, because these fits are too small to use twenty threads well. It
+also makes the forecasts independent of the machine's core count.
 
 **`n_jobs`.** How many worker processes the harness uses (default: every
 core). It changes wall time only, never a forecast, so it is not part of
-the cache key. `n_jobs=1` runs the same task function in-process, which is
-what the tests compare against.
+the cache key. `n_jobs=1` runs the same task function in-process.
 
 **ARIMA order selection.** ARIMA chooses its order once per series on that
-series' first scored window and holds it for the year. With folds spread
-over processes, the harness makes that choice first, in parallel over
-series, and hands the orders to every worker; otherwise each worker would
-choose its own on whatever window it saw first.
+series' first scored window and holds it for the year. The harness makes
+that choice first, in parallel over series, and hands the orders to every
+worker. A failed choice is an error.
 
 **Reproducibility caveat.** With the seed and the thread count fixed, a
 fit is deterministic on the same platform. XGBoost's column subsampling
-can still give different (but each reproducible) results on a different
-operating system, so cross-machine identity is claimed only for the same
-OS and library versions.
+can give different, individually reproducible results on a different
+operating system, so identity across machines is claimed only for the
+same OS and library versions.
 
-## Rules added by the review (item 8)
+## Rules added by the 2026-09-23 review
 
 **Closure imputation is backward-only.** A closure day (Christmas) is
-filled with the mean of the same weekday over the four *preceding* weeks,
-skipping days inside a holiday window. Weeks after the closure are never
-used: Christmas 2015 sits inside the scored year, and a value borrowed from
-January 2016 would have entered the lags, the training rows and the
-seasonal naïve of every fold with an origin in the following four weeks
-(FPP §5.10). What the book itself says (§13.7): for a store closed on a
-public holiday, set the day to zero and give an ARIMA dummies for the day
-and the day after; for an outlier, replace it by two-sided interpolation.
-Both are data preparation before a fit, not steps inside a rolling
-evaluation, and the zero would sit in every lag, rolling mean and ETS
-fit here. The backward rule is the compromise: the book's estimate,
-restricted to the past. Two-sided filling would be legitimate for the
-four Christmases before the scored year; one rule was kept for
-simplicity, and the refit put the whole choice in the third decimal.
-`CACHE_VERSION` 3.
+filled with the mean of the same weekday over the four preceding weeks,
+skipping days inside a holiday window. Christmas 2015 sits inside the
+scored year, and a value borrowed from January 2016 would have entered the
+lags, the training rows and the seasonal naïve of every fold with an
+origin in the next four weeks (FPP §5.10). The book's own guidance (§13.7)
+is to set a closed day to zero and give an ARIMA dummies for the day and
+the day after, or to interpolate an outlier from both sides; both are data
+preparation before a single fit. The backward rule is that estimate
+restricted to the past. Two-sided filling would have been fine for the
+four Christmases before the scored year; one rule was kept for simplicity,
+and the refit put the whole choice in the third decimal. `CACHE_VERSION` 3.
 
 **Events are chosen before the cutoff.** `event_effects(df, calendar,
 cutoff)` measures each event on the data before the first scored day, so
 the holiday feature set is not selected on the test period (FPP §5.8). On
 the study's item the same events clear the threshold either way.
 
-**Unscored fold.** A fold whose forecast is missing or whose RMSSE scale is
-zero or undefined. It is counted (`n_unscored`) and left out of every
-average and every paired comparison, rather than scored as infinitely bad
-or silently dropped.
-
-**Fallback.** A forecaster that cannot fit a fold (a failed ETS or ARIMA
-estimation) returns the 28-day mean and says so through
-`base.note_fallback`; the harness records `fallback` on every row of that
-forecast and the tables count them (`n_fallback`). A method that "won" on
-fallbacks is visible as such.
-
-**Cached runs are checked against the data.** The cache key names the
-configuration and the code, not the data. On every cache read the harness
-compares the cached actuals with the panel's sales; a mismatch (data
-changed, or a cache next to other data) is an error, never a silent result.
-
 **The daily grid is asserted.** Every series must be an unbroken run of
 days, because lags, benchmarks and the RMSSE scale are positional. A source
 with gaps must be reindexed and flagged first (FPP §13.7).
-
-**Run rows are immutable.** Recording a run again keeps the first row (its
-time and commit describe when the forecasts were made) and appends the
-note. A paired comparison skips folds where the reference RMSSE is zero and
-reports how many (`n_undefined`).
