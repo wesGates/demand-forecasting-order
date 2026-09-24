@@ -1,18 +1,28 @@
 # Findings
 
-The notebooks are the *procedure*: they run unchanged for any item and print
-what they find rather than stating it. What the findings *mean* for a
-particular item is written here, one dated file per item, answering the
-checklist at the end of each notebook:
+One dated file per item. Each states what was measured, with the numbers,
+and opens with a provenance block: branch, commit, the config line that
+rebuilds the run, and the cache files the numbers came from. Anyone can
+check out the commit and either read the same cache file or refit and
+compare.
 
-- `01_explore` — is the working set clean, what is the dominant structure,
-  which known-in-advance variables carry signal, does the demand class vary.
-- `02_evaluate` — which methods beat the benchmarks and by how much, whether
-  the ranking depends on the store and on the kind of week, how error grows
-  with horizon, whether the residuals are clean, where the models lose.
-- `03_order` — how often ordering the mean would have stocked out, whether the
-  ranking survives an asymmetric cost, whether the quantiles are trustworthy,
-  what the order would have been.
+| file | item |
+|---|---|
+| `2026-09-22-FOODS_3_586.md` | the first study's findings, carried over from the parent repository |
+| `2026-09-22-item1-quantile-objective.md` | XGBoost on the quantile objective |
+| `2026-09-23-item2-every-day-origins.md` | every day an origin |
+| `2026-09-23-item3-pooling.md` | one model for all ten stores |
+| `2026-09-23-item4-intermittent-item.md` | an intermittent, declining item |
+| `2026-09-23-item5-level-relative-target.md` | trees on a level-relative target |
+| `2026-09-23-item6-run-registry.md` | the run registry |
+| `2026-09-23-item7-parallel-harness.md` | the parallel harness |
+| `2026-09-23-item8-review-fixes.md` | the review fixes and the refit under them |
 
-These files are the raw material for the report under `report/`, which is
-the public write-up. A findings file quotes numbers; the report explains them.
+Each file stays as written at its stage. Later items do not rewrite
+earlier ones; when a number is superseded, the later file says so and gives
+the new one. The numbers to quote are always the latest file's.
+
+The notebooks (`notebooks/`) are the procedure the first study followed.
+They run unchanged for any item and print what they find. The checklists
+at the end of `01_explore` and `02_evaluate` are what the first findings
+file answers.

@@ -1,149 +1,86 @@
-# Plan and handoff
+# Plan
 
-Written 2026-09-22, when this repository was split from
-[demand-forecasting](https://github.com/wesGates/demand-forecasting). Read
-this first. It says what the parent established, what is here, what to do
-next and in what order, and the rules of the road. `GLOSSARY.md` defines
-the terms the findings and the validator use.
+Read this first. It says where the project stands, what comes next, what
+things cost, and the rules. `GLOSSARY.md` defines the terms; `findings/`
+has the numbers.
 
-## What the parent established
+## Where it stands
 
-One fast-moving grocery item (`FOODS_3_586`) at ten stores, 52 walk-forward
-folds of 7 days over 25 May 2015 – 22 May 2016, origins 7 days apart (all
-Sundays). Against the seasonal naïve reference (this day last week):
-
-| model | win rate | median improvement | Q1–Q3 | mean RMSSE (all / normal / holiday) | bias, units/day |
-|---|---|---|---|---|---|
-| ARIMA (seasonal, holiday regressors) | 82% | 24% | 10–37% | 0.65 / 0.63 / 0.74 | −0.1 |
-| ETS (Holt-Winters) | 83% | 21% | 8–33% | 0.67 / 0.64 / 0.80 | −0.1 |
-| XGBoost | 75% | 23% | 0–40% | 0.67 / 0.65 / 0.72 | +0.9 |
-
-XGBoost wins at the Texas stores and on holiday weeks; the classical models
-at the California stores and on ordinary weeks. XGBoost over-forecasts by
-about 4% at the busiest store. Full write-up: the parent's `report/`.
-
-## What is here that the parent removed
-
-- `src/order.py`: weekly totals, calibrated quantile forecasts (point
-  forecast plus the τ-quantile of a method's own errors over a calibration
-  year), pinball loss with FPP's factor of two, coverage, expanding-window
-  variant.
-- `notebooks/03_order.py`, `tests/test_order.py`, validator check 7, the
-  order figures.
-- Prototype result (calibrated quantiles, two-year run, all on step 7):
-  ARIMA best pinball at τ 0.3/0.5/0.7, ties XGBoost at 0.9; XGBoost fifth at
-  τ 0.3 because its errors shrink year over year so a fixed calibration
-  year overstates its spread; coverage 0.89–0.92 at τ 0.9 for every model.
-
-## The work, in order
-
-1. **XGBoost on the quantile objective.** A new method that fits one
-   multi-quantile model per store and origin (`reg:quantileerror`, several
-   τ at once) and exposes one registered forecaster per τ. Compare with ETS
-   and ARIMA given the same treatment: their daily τ-quantiles from
-   calibrated error quantiles per horizon. Score daily pinball by τ and
-   coverage; then weekly totals. Acceptance: a table of pinball by method
-   and τ on the same folds, with coverage, where "same treatment" is stated
-   exactly.
-2. **Every day an origin.** `Config(fold_step=1, n_folds=358)` scores the
-   same year with origins rotating through the week. One run of about
-   1 h 45 min for all methods; from then on it is the reported layout and
-   step 7 is for development. Acceptance: the parent's tables reproduced on
-   the new layout, with the horizon plot clean and one-step residuals.
-3. **Pooled across stores.** `Config(pool_by="item_id")`, one model for the
-   item over all stores with store identity as a feature. This is the
-   design that scales to thousands of items. Acceptance: by-store RMSSE
-   against the per-store models, especially the quiet stores.
-4. **An intermittent item.** Choose by the demand classification (ADI ≥ 1.32
-   or CV² ≥ 0.49 at some stores). Acceptance: the same tables, with the
-   classical and simple methods expected to win where the earlier analysis
-   said they would.
-
-## Status, 2026-09-23
+The parent repository established that XGBoost, ETS and seasonal ARIMA
+beat six benchmarks on one fast-moving item at ten stores (52 weekly
+folds), and that a point forecast is not an order. This repository took
+that pipeline through eight items:
 
 | item | branch | outcome |
 |---|---|---|
-| 1. quantile objective | on main | matches post-hoc calibration within 0.002 at 26x the cost; ARIMA + calibration best |
-| 2. every day an origin | `item2-fold-step-1`, merged | tables within 0.005; naive/drift Sunday bias was an artefact; adopted as reported layout |
-| 3. pooled XGBoost | `item3-pooling`, merged | best method on the fast mover: 0.621 vs ARIMA 0.647; Q1 improvement 10% vs 1% |
-| 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
-| 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
-| 6. run registry | `item6-run-registry` | SQLite `run` + `fold_score` tables beside the cache, suites, `src.run`; 204 runs back-filled; first paired comparison shows item 5's fast-mover gain is marginal (54% wins, median +1.2%) |
-| 7. parallel harness | `item7-parallel-harness` | tasks per fold in worker processes, one thread per fit; every method identical to the old cache; every-day all-methods run 15 min (was ~2 h) |
-| 8. review fixes | `item8-review-fixes` | closure imputation backward-only (leak), events chosen pre-cutoff, fallbacks and unscored folds counted, cache checked against the data, `step1` in the key, atomic writes, registry guards; refit and comparison in the findings |
+| 1. quantile objective | on main | matches calibrated error quantiles within 0.002 at 26× the cost; ARIMA plus calibration best |
+| 2. every day an origin | `item2-fold-step-1` | tables within 0.005; the naïve and drift Sunday bias was an artefact; adopted as the reported layout |
+| 3. pooled XGBoost | `item3-pooling` | best method on the fast mover; Q1 improvement 9% against 1.5% per store; bias cut by two thirds |
+| 4. intermittent item | `item4-intermittent` | learned models lose at every store; the cause is level drift, which trees cannot extrapolate |
+| 5. level-relative target | `item5-level-relative-target` | closes the gap on the declining item (0.570 → 0.501), small gain on the fast mover (0.622 → 0.611) |
+| 6. run registry | `item6-run-registry` | `run` and `fold_score` tables beside the cache, suites, `src.run`, paired comparisons |
+| 7. parallel harness | `item7-parallel-harness` | one thread per fit, tasks in worker processes; forecasts identical; every-day runs 15 min per item |
+| 8. review fixes | `item8-review-fixes` | closure imputation backward-only; events chosen before the cutoff; fallbacks and unscored folds counted; cache checked against the data; `step1` in the key; atomic writes; registry guards |
 
-Next, in order (revised 2026-09-23 after item 7; the registry and the
-parallel harness are done): (a) the pooled, level-relative model's own
-residuals and calibrated quantiles; (b) intermittent demand properly and
-pooling wider than the item; (c) new items; (d) the SQL Server results
-store and per-forecast explanations; (e) the Fourier/STL item. All are
-described under "Later, not yet scheduled".
+The numbers to quote are in `findings/2026-09-23-item8-review-fixes.md`.
+The ordering prototype (`src/order.py`, notebook 03) is from before item 1
+and is where the quantile work continues.
 
-## Later, not yet scheduled
+## Next, in order
 
-- **Deferred by the 2026-09-23 review** (details in the owner's notes):
-  the pooled path at hundreds of items (design once per origin, index the
-  pool; one task per fold is serial over stores); the pooled quantile model
-  refits per store; a worker exception discards the whole run's rows;
-  Croston/TSB will need a service-level metric beside RMSSE and a per-method
-  minimum history; whether Martin Luther King Day (18.7% effect) joins the
-  holiday features is an experiment for the registry.
+1. The pooled, level-relative model's own residuals and calibrated
+   quantiles (the order step, on the model that won).
+2. Intermittent demand properly: a sample of items chosen by demand class,
+   Croston and TSB as registered methods (FPP §13.2), results by class, a
+   service-level score beside RMSSE, and a per-method minimum history.
+3. Pooling wider than one item.
+4. New items. The harness needs a year of history per series, so new items
+   need their own evaluation: items launched inside the test year, against
+   simple fallbacks and pretrained models that need no history.
+5. The SQL Server results store and per-forecast explanations (designed,
+   below).
+6. Fourier terms or an STL decomposition for the annual cycle in the
+   classical models (FPP §13.1).
 
-- **Fourier terms and STL decomposition** (FPP §13.1). Daily data carries a
-  weekly and an annual cycle; the classical models here take only the
-  weekly one. Two routes: Fourier terms for the annual cycle as regressors
-  in the ARIMA (dynamic harmonic regression), or an STL decomposition with
-  a model on the seasonally adjusted series. Worth evaluating once the four
-  items above are done, since the annual shape is where the classical
-  models could gain against XGBoost, which already sees day of year.
-- **Run registry: done as item 6.** Remaining: a `rekey` event type
-  (with item 7), and suites for a class-stratified item set and for new
-  items.
-- **Faster iteration: done as item 7.**
-- **Intermittent demand, properly.** A class-stratified item sample,
-  Croston and TSB as registered methods, results by class, and the deep
-  learning models FPP covers, compared on the same folds.
-- **New items (zero-shot / cold start).** Needs its own evaluation design:
-  the harness requires a year of history (`min_train_days`), so new items
-  are scored on items launched inside the test period, against simple
-  fallbacks (category or store averages) and pretrained forecasting models
-  that need no history of the item.
-- **SQL Server as the results store** (designed 2026-09-23, not built).
-  SQL Server in a Docker container as source and sink for the pipeline,
-  in new files only, so no cached run is invalidated:
-  1. sales, calendar, store and item tables loaded from the M5 files, with
-     a test that the panel read back equals `load_panel`;
-  2. a `run` table with one row per cache entry (run id = cache digest;
-     method, `pool_by`, `fold_step`, `n_folds`, horizon, seed, item and
-     store scope, code digest, branch, commit, full config as JSON) and a
-     `forecast` table keyed by run, store, item, origin and target date;
-     actuals come from a join on the sales table, not a copy; filled by an
-     idempotent sync from `cache/predictions/`, never edited by hand;
-  3. scoring views (RMSSE, bias, WAPE, MAPE, win rate, quartiles by store
-     and kind of week) with a test that they equal the pandas tables;
-  4. a daily job that reads history up to a date, fits, and writes the next
-     seven days; rerunning a date must leave the table unchanged.
-  Optional throughout: everything still runs without a database. CI can
-  run the tests against a SQL Server service container on synthetic
-  series, never the licensed data. Costs: Docker setup, a second copy of
-  the results kept honest by the sync rule, metric definitions in two
-  languages kept equal by a test. About 5–6 h.
-- **Plain-language explanations per forecast.** XGBoost's exact feature
-  contributions (`pred_contribs`) summed into a few groups (recent level,
-  day of week, holiday, SNAP, time of year), one sentence per forecast, a
-  test that each explanation adds up to its forecast, and a stability
-  check across adjacent origins. ETS and ARIMA explain themselves through
-  their components and regression coefficients (FPP ch. 8 and ch. 10).
-  Explanations describe the model, not the customer (FPP §7.8).
+## Designed, not built
 
-## Costs and the cache
+**SQL Server as the results store.** SQL Server in a Docker container as
+source and sink, in new files only so no cached run is invalidated:
 
-Per method, per config, cached under `cache/predictions/` with a JSON
-sidecar. Editing one model's module refits that model only. Changing
-`fold_step`, `pool_by` or the item is a new config: every method refits for
-it, once. Paths are
-not in the key, so the cache is portable; this folder's `cache/` was copied
-from the parent and holds the step-7 runs (52 and 104 folds).
+1. sales, calendar, store and item tables loaded from the M5 files, with a
+   test that the panel read back equals `load_panel`;
+2. a `run` table with one row per cache entry (run id = cache digest,
+   method, pooling, layout, item and store scope, code digest, branch,
+   commit, full config) and a `forecast` table keyed by run, store, item,
+   origin and target date; actuals from a join on the sales table; filled
+   by an idempotent sync from the cache and never edited by hand;
+3. scoring views (RMSSE, bias, WAPE, MAPE, win rate, quartiles by store and
+   kind of week) with a test that they equal the pandas tables;
+4. a daily job that reads history up to a date, fits, and writes the next
+   seven days; rerunning a date leaves the table unchanged.
+
+Everything keeps running without a database. CI can run the tests against
+a SQL Server service container on synthetic series. About 5–6 h.
+
+**Plain-language explanations per forecast.** XGBoost's exact feature
+contributions summed into a few groups (recent level, day of week,
+holiday, SNAP, time of year), one sentence per forecast, a test that each
+explanation adds up to its forecast, and a stability check across adjacent
+origins. ETS and ARIMA explain themselves through their components and
+coefficients (FPP ch. 8 and 10). An explanation describes the model, not
+the customer (FPP §7.8).
+
+**Deferred by the 2026-09-23 review.** The pooled path at hundreds of items
+(build the design once per origin and index the pool; one task per fold is
+serial over stores); the pooled quantile model refits per store; a worker
+exception discards the whole run's rows; whether Martin Luther King Day
+(an 18.7% effect) joins the holiday features is an experiment for the
+registry.
+
+## Costs
+
+Measured 2026-09-23 under the parallel harness, every core, one thread per
+fit.
 
 | layout | all point methods | XGBoost only | ARIMA only |
 |---|---|---|---|
@@ -151,33 +88,32 @@ from the parent and holds the step-7 runs (52 and 104 folds).
 | `weekly`: 10 stores, 52 folds | ~3 min | ~20 s | ~2 min |
 | `everyday`: 10 stores, 358 origins | ~15 min | ~2 min | ~10 min |
 
-Measured 2026-09-23 under the parallel harness (item 7), every core, one
-thread per fit. The quantile model has not been re-timed. Two heavy jobs
-at once still contend; run one at a time. Develop on `DEV`; run the full layout once per change
-that survives it; report from the step-1 layout. Edits to the harness
-(`step5_evaluate.py`) or the shared base invalidate every method's cache,
-so batch them.
+Two heavy jobs at once contend, so run one at a time. Develop on `dev`,
+run `everyday` once per change that survives it, report from `everyday`.
+Edits to the harness, the shared base, the features, the loader or the
+config invalidate every method's cache, so batch them; `tools/refit_all.py`
+remakes every reported run in about 45 min.
 
 ## Rules
 
-- No employer, product, or third-party document is ever named in code,
-  comments, notebooks, reports, commit messages, or this file. The two
-  words to scan for are kept in the owner's private notes outside the
-  repository; a case-insensitive `git grep` for each must return nothing
-  before every commit.
-- Commits carry the owner's identity only. No co-author or tool
-  attribution lines of any kind.
-- Report voice: third person, passive, technical; cite as (FPP §5.8); say
-  what an orderer *can* do. Every number in a report is read back against
-  the tables that produced it.
-- The validator and the tests pass before any number is quoted.
-- Correctness fixes to shared code flow back to the parent by cherry-pick
-  (`git remote add parent https://github.com/wesGates/demand-forecasting.git`);
-  nothing that changes a number in the parent's report is a fix.
+- No employer, product or third-party document is named anywhere in the
+  repository. The words to scan for are kept in the owner's private notes;
+  a case-insensitive `git grep` for each must return nothing before a
+  commit.
+- Commits carry the owner's identity only.
+- Every number in a report is read back against the table that produced
+  it. The validator and the tests pass first.
+- Report voice: third person, technical; cite as (FPP §5.8); say what an
+  orderer can do.
+- One branch per item, with a findings file; merged after review.
+- After a change that touches forecasts, refit and compare
+  (`tools/refit_all.py`, `tools/compare_runs.py`, `tools/compare_forecasts.py`)
+  before quoting anything.
 
 ## Local setup
 
-- Folder: `~/Documents/projects/demand-forecasting-order`, own `.venv`
-  (Python 3.14, `requirements.txt`), `data` is a symlink to the parent's
-  data folder, `cache/` copied from the parent.
-- Figures render to `figures/<notebook>/`; the report keeps its own copies.
+`~/Documents/projects/demand-forecasting-order`, its own `.venv` (Python
+3.14, `requirements.txt`). `data` is a symlink to the parent repository's
+data folder. `cache/` holds the runs and the registry and is gitignored.
+Figures render to `figures/`, also gitignored; the report keeps its own
+copies.

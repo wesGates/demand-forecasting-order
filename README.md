@@ -1,252 +1,138 @@
-# Demand forecasting on M5 — from point forecast to order quantity
+# Demand forecasting on M5, the follow-on study
 
 This repository continues
-[demand-forecasting](https://github.com/wesGates/demand-forecasting), which
-established that XGBoost, ETS and seasonal ARIMA all beat six benchmarks on
-a fast-moving item at ten stores, and that a point forecast is not an
-order. The work here, in order:
+[demand-forecasting](https://github.com/wesGates/demand-forecasting). That
+study compared XGBoost, ETS and seasonal ARIMA against six benchmarks on
+one fast-moving grocery item at ten stores, on 52 weekly folds. This one
+takes the same pipeline further, one numbered item at a time, each on its
+own branch with its own findings file.
 
-1. Train XGBoost on the quantile objective at chosen service levels and
-   compare it with ETS and ARIMA given the same treatment, scored with the
-   quantile score and coverage.
-2. Make every day a fold origin (`Config(fold_step=1)`) so the scoreboard
-   averages over all order days; adopt it as the reported layout.
-3. Run the pooled model across stores, the design that scales to thousands
-   of items, and see whether it helps the quiet stores.
-4. Repeat the study on an intermittent item.
+| item | question | answer |
+|---|---|---|
+| 1 | Does XGBoost trained on the quantile objective beat calibrated error quantiles? | No. Same pinball loss within 0.002, at 26× the fit cost. |
+| 2 | Does making every day an origin change the results? | Tables move by less than 0.005. Two benchmarks lose a Sunday artefact. Adopted as the reported layout. |
+| 3 | One model pooled across the ten stores? | Best method on the fast mover. Helps the quiet stores most and cuts bias by two thirds. |
+| 4 | An intermittent, declining item? | The learned models lose at every store. The cause is level drift, which trees cannot extrapolate. |
+| 5 | Trees on a level-relative target? | Closes the gap on the declining item, small gain on the fast mover. |
+| 6 | A run registry | Every run on record with its config, code version, commit and scores, and paired comparisons between runs. |
+| 7 | A parallel harness | Every-day runs in 15 min per item, down from about 2 h. Forecasts identical. |
+| 8 | A code review | One leak fixed (the closure imputation looked forward), fallbacks and unscored folds counted, the cache checked against the data. |
 
-The parent's README follows; it describes the pipeline this builds on.
-
----
-
-
-Daily unit-sales forecasting for retail replenishment, built step by step
-along the five-stage method in *Forecasting: Principles and Practice*
-(Hyndman & Athanasopoulos, [otexts.com/fpppy](https://otexts.com/fpppy/)).
-
-The question: on a fast-moving grocery item sold at ten stores, does a
-gradient-boosted model beat the simple methods a person would use without one —
-and does the answer depend on the store?
-
-**Status:** steps 1–5 built and validated on one item across ten stores.
-The write-up is [`report/report.md`](report/report.md); the dated numbers
-behind it are in [`findings/`](findings/). Results below are the headline
-tables from that report.
-
----
-
-## What it does
-
-- Loads the public M5 dataset (Walmart, 2011–2016), reshapes it to one row per
-  store-item-day, and joins calendar, holiday, SNAP and price information.
-- Screens each series for *availability* before anything else — a month of zero
-  sales on a fast-moving item is a stocking gap, not demand, and it corrupts
-  every statistic downstream. Treats the one closure day in the calendar
-  (Christmas) as a missing observation rather than a zero (FPP §13.7).
-- Measures which calendar events actually move the item, and gives the models
-  holiday proximity — the run-up and the hangover — rather than an on/off flag.
-- Classifies demand by how often and how consistently an item sells
-  (ADI / CV², the Syntetos–Boylan scheme), computed on training data only.
-- Forecasts seven days ahead from a single origin, daily, exactly as a
-  replenishment run would: stand on Sunday, order for the week.
-- Compares three learned models — **XGBoost**, **ETS** (Holt-Winters) and
-  **seasonal ARIMA** with calendar regressors — against **six benchmarks**:
-  mean, naïve, seasonal naïve (this day last week, the orderer's default
-  screen), seasonal naïve at one year (this day last year, what an orderer
-  checks before a holiday), drift, and a 28-day moving average.
-- Scores with **RMSSE** (FPP §5.8) over 52 walk-forward folds (FPP §5.10), one
-  full year, plus RMSE, MAE, bias, and win rates — every table split into
-  normal and holiday weeks, so a pooled number can never hide where a win
-  came from.
-- Reports **win rate and per-week improvement quartiles** against the
-  orderer's default screen, so a mean improvement cannot hide a quarter of
-  weeks that got worse.
-- Refuses to report a number until a validator has passed.
-
-## Why the safeguards are the point
-
-An earlier version of this project produced a 90% win rate that was wrong twice
-over: lag features reached into the test window, and the only benchmark was
-one that a dull model beats without skill. Everything here is built so those
-two failures cannot recur:
-
-- **Nothing sees the future.** A forecaster receives a `Context` with no target
-  values in it, and training rows are filtered by *when their answer became
-  observable*, not by when they were built. A date-comparison assertion refuses
-  anything that reaches past the origin.
-- **Six benchmarks, not one.** Seasonal naïve stakes everything on one past
-  day; on a noisy series its error is about √2 worse than predicting the mean.
-- **`python -m src.validate`** runs eight checks that each catch a different way
-  of being *plausibly* wrong — closed-form benchmark answers, feature values
-  recomputed by a second route, per-state SNAP flags against the raw calendar,
-  holiday-proximity counts and closure flags recounted from the calendar, the
-  quantile scoring on errors of known distribution, a synthetic noise floor no
-  honest model can beat, a shuffled target no model should learn from, and
-  byte-identical reruns.
-
-## When a run is recomputed, and when it is not
-
-A full run of every method costs about twenty minutes on the tiled layout
-(52 origins, 7 days apart) and about seven times that when every day is an
-origin (`Config(fold_step=1)`, the intended standard for reported numbers).
-Each method's predictions are cached separately under `cache/predictions/`,
-keyed on the config and on the code that method depends on:
-
-- **Recomputed:** that method's module in `src/models/` changes (not its
-  docstrings), the harness `step5_evaluate.py` or the shared `models/base.py`
-  changes, the feature or loader version is bumped, or a config value
-  changes.
-- **Served from cache:** everything else - plots, notebooks, tests, the
-  validator, prose, and edits to *other* methods' modules. Editing XGBoost
-  refits XGBoost only.
-- **Adopted:** a config that adds a new field at its default value reuses
-  runs made before the field existed.
-
-The cache is portable: file paths are not part of the key, so copying
-`cache/` into a fork or another machine carries the runs across.
-
-## Measuring every change against the last one
-
-`cache/registry.sqlite` lists every run on record: one row per cached run
-(method, layout, item, pooling, code digest, git commit, time, headline
-scores against the seasonal naive and the 28-day mean) and one row per
-store-origin scored. It is built from the cache and git only, never edited
-by hand, and rebuilt with `python -m src.registry backfill`.
-
-```
-python -m src.run --suite dev --item fast --methods xgboost_rel --note "what this tries"
-python -m src.registry list everyday
-python -m src.registry last <run_id>          # paired against its predecessor
-python -m src.registry compare <run_a> <run_b>
-```
-
-Suites (`src/suites.py`) fix the layout a change is scored on: `dev` (three
-stores, eight weekly folds, ~20 s), `weekly` (52 folds), `everyday` (358
-origins, the reported layout). A comparison pairs the same store and
-origin under two runs and reports the win rate and the quartiles of the
-improvement, so a change inside the fold-to-fold noise reads as a win rate
-near 50% and a median near zero rather than as progress.
-
-## Layout
-
-Terms used throughout (origin, fold, layout, the cache, the validator's
-negative controls, pooling, the level-relative target, the scores) are
-defined in `GLOSSARY.md`.
-
-```
-src/
-  step1_problem.py    Config — every decision in one frozen object, with FPP refs
-  step2_data.py       load, reshape, join, pre-launch trim, parquet cache
-  step3_explore.py    availability screen, ADI/CV² classification
-  features.py         origin-based lags, rolling stats, calendar; leakage assertion
-  step4_models.py     the registry: six benchmarks + XGBoost + ETS + ARIMA
-  models/             one module per forecaster (cache invalidation is per module)
-  step5_evaluate.py   walk-forward harness, RMSSE, normal/holiday split, tables
-  order.py            weekly totals, calibrated quantile forecasts, pinball loss
-  plots.py            every figure, on one palette
-  validate.py         the gate
-  render_figures.py   regenerate all figures to figures/<notebook>/
-tests/                pytest suite: benchmarks, features, harness, models, ordering
-notebooks/
-  01_explore.py       FPP step 3 — graph the data before modelling anything
-  02_evaluate.py      FPP step 5 — run the comparison, read the diagnostics
-  03_order.py         FPP step 5, continued — from forecast to order quantity
-findings/             what the notebooks found for a particular item, dated
-report/               the write-up, with its own copies of the figures
-```
-
-Notebooks are plain `.py` files with `# %%` cell markers: open in VS Code and
-run cells with Shift+Enter in the Interactive Window. A cell near the top pops
-figures out into their own windows.
-
-## Setup
-
-```
-python -m venv .venv                  # Python 3.14
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Data is the Kaggle **M5 Forecasting – Accuracy** competition set. Place these
-three files in `data/` (gitignored):
-
-```
-sales_train_evaluation.csv
-calendar.csv
-sell_prices.csv
-```
-
-Then:
-
-```
-python -m src.validate          # must pass before any number is quoted
-python -m pytest tests          # tests pinning documented behaviour
-python -m src.render_figures    # all figures -> figures/<notebook>/
-python -m src.step5_evaluate    # the comparison, as tables
-python -m src.order             # prototype: forecast -> order quantity (follow-on work)
-```
+Findings files are in `findings/`, dated, one per item. `PLAN.md` has the
+status, what comes next and the rules. `GLOSSARY.md` defines the terms.
 
 ## Results
 
-One item (`FOODS_3_586`), ten stores, 52 walk-forward folds of 7 days — one
-full year, 25 May 2015 to 22 May 2016 — RMSSE scaled by the seasonal-naïve
-error on training data. "Holiday" folds are the ten weeks per store that
-touch the window around a major event; "normal" folds are the other 42.
+Every-day layout, 358 origins, ten stores, the year 25 May 2015 to 22 May
+2016. RMSSE is the error scaled by the seasonal naïve on training data, so
+1.0 means no better than "this day last week". Bias is forecast minus
+actual in units a day.
 
-| method | all weeks | normal weeks | holiday weeks | bias (units/day) |
+| method | fast mover (FOODS_3_586) | bias | slow, declining item (FOODS_1_021) | bias |
 |---|---|---|---|---|
-| ARIMA (seasonal, calendar regressors) | 0.65 | 0.63 | 0.74 | −0.1 |
-| XGBoost | 0.67 | 0.65 | 0.72 | +0.9 |
-| ETS (Holt-Winters) | 0.67 | 0.64 | 0.80 | −0.1 |
-| moving average (28) | 0.80 | 0.78 | 0.87 | −0.1 |
-| seasonal naïve (last week) | 0.86 | 0.82 | 1.02 | −0.1 |
-| mean | 0.96 | 0.96 | 0.99 | +3.3 |
-| seasonal naïve (last year) | 1.04 | 1.03 | 1.08 | −0.1 |
-| naïve / drift | 1.10 | 1.10 | 1.10 | +9.5 |
+| XGBoost, pooled, level-relative target | **0.611** | +0.21 | 0.501 | +0.18 |
+| XGBoost, pooled | 0.622 | +0.26 | 0.570 | +0.57 |
+| ARIMA, seasonal, holiday regressors | 0.648 | +0.00 | 0.519 | +0.33 |
+| XGBoost, one model per store | 0.665 | +0.76 | 0.610 | +0.95 |
+| ETS, Holt-Winters | 0.670 | −0.06 | 0.500 | +0.14 |
+| 28-day moving average | 0.795 | −0.03 | **0.497** | +0.08 |
+| seasonal naïve, this day last week | 0.864 | −0.04 | 0.687 | +0.03 |
 
-What the year says that the spring slice could not:
+On the fast mover the pooled level-relative XGBoost beats the seasonal
+naïve in 84% of seven-day forecasts, by a median of 28%, and is the best
+method at seven stores; the plain pooled model takes the other three. On
+the slow item the simple methods lead and the same model ties them. The
+per-store trees that started the study were 60% high on it.
 
-- The three models are within 0.03 of each other over the year and all beat
-  every benchmark at every store. Which one is *best* depends on the store:
-  XGBoost leads at all three Texas stores and two of the three Wisconsin
-  ones; ETS or ARIMA leads at every California store.
-- The split shows where each earns its keep. On ordinary weeks the classical
-  models edge XGBoost. On holiday weeks XGBoost is best and ETS falls
-  furthest — ETS is the one model that cannot be told a holiday is coming,
-  and the gap between it and ARIMA on holiday weeks (0.80 vs 0.74) is the
-  price of that.
-- "This day last year" — what an orderer checks before a holiday — is a
-  *worse* benchmark than "this day last week" on this item, even in holiday
-  weeks. The item's level has drifted year over year, and the annual lookup
-  carries the old level with it.
-- Naïve and drift over-forecast by nine units a day because every origin is a
-  Sunday, the busiest day, and they repeat it for the week.
-- XGBoost's over-forecast is smaller over the year (+0.9/day) than in the
-  spring slice (+1.2), but it remains the one model with a positive bias.
+## How the pipeline works
 
-### Win rate and improvement over the default screen
+- `src/step2_data.py` loads M5, reshapes it to one row per store, item and
+  day, joins the calendar, SNAP and price data, and fills the Christmas
+  closure from the four preceding weeks (FPP §13.7 for the closure as a
+  missing day, §5.10 for why only the past is used).
+- `src/step3_explore.py` screens each series for stock-out gaps and
+  classifies demand by ADI and CV² on training data only.
+- `src/features.py` builds lags, rolling summaries, same-weekday means and
+  holiday proximity from data at or before the origin, with an assertion
+  on every fold.
+- `src/models/` holds one module per forecaster. `src/step4_models.py`
+  registers them.
+- `src/step5_evaluate.py` runs the walk-forward in parallel and caches each
+  method's forecasts under a key made of the config and the code the
+  method depends on. `src/scoring.py` turns forecasts into tables.
+- `src/registry.py` records every run. `src/suites.py` names the layouts.
+  `src/run.py` runs, registers and compares.
+- `src/validate.py` is the gate: ten checks, including negative controls
+  on synthetic data.
 
-| model | win rate vs seasonal naïve | mean | median | Q1 | Q3 |
-|---|---|---|---|---|---|
-| ARIMA | 82% | 20% | 24% | 10% | 37% |
-| ETS | 83% | 19% | 21% | 8% | 33% |
-| XGBoost | 75% | 16% | 23% | 0% | 40% |
+## Running it
 
-XGBoost's median improvement equals ARIMA's, but its lower quartile is zero:
-in a quarter of weeks it does no better than the default screen. It also
-over-forecasts by about 4% at the busiest store, which the bias column shows
-and the error score does not.
+```
+python -m venv .venv                       # Python 3.14
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-A point forecast is not an order. A prototype of the next step, turning the
-forecast into a quantile order at a service level and scoring it with the
-quantile score, is in `src/order.py` and notebook `03_order`; it is the
-subject of the follow-on work and is not part of this report.
+Put the Kaggle M5 files `sales_train_evaluation.csv`, `calendar.csv` and
+`sell_prices.csv` in `data/` (gitignored). Then:
 
-## What is deliberately not claimed
+```
+python -m src.validate                     # ten checks; run before quoting a number
+python -m pytest tests                     # the test suite
+python -m src.run --suite dev --item fast --methods xgboost_rel --note "what this tries"
+python -m src.registry list everyday       # every run on record, on the reported layout
+python -m src.registry last <run_id>       # a run against its predecessor
+```
 
-This is a learning project on public data. M5 has no inventory positions,
-receipts or transfers, so the replenishment calculation a forecast feeds into
-can only be simulated. Price is excluded as a feature for this item because it
-changes on two fixed dates in five years — a clock, not a variable — and that
-would not hold for another product. Pooling across stores is wired in but not
-yet run.
+Suites fix the layout a change is scored on. `dev` is three stores and
+eight weekly folds (under a minute), `weekly` is 52 folds (about 3 min for
+every method), `everyday` is 358 origins (about 15 min). Develop on `dev`
+and confirm on `everyday`.
+
+`tools/` has the refit, gate, comparison and figure scripts, each described
+in `tools/README.md`.
+
+## The cache and the registry
+
+Each method's forecasts are cached under `cache/predictions/` with a key
+made of the config (paths excluded) and a digest of the code the method
+depends on. Editing one model refits that model only. A cached run is
+checked against the data on disk every time it is read. The registry
+(`cache/registry.sqlite`) lists every run with its config, code digest,
+commit, time and scores, plus one row per store-origin, and can be rebuilt
+from the cache with `python -m src.registry backfill`. Both live under
+`cache/`, which is gitignored.
+
+## Layout
+
+```
+src/
+  step1_problem.py    Config, every decision in one frozen object
+  step2_data.py       load, join, trim, impute closures, cache the panel
+  step3_explore.py    availability screen, demand classification, event effects
+  features.py         origin-based features and the leakage assertion
+  step4_models.py     the forecaster registry
+  models/             one module per forecaster
+  step5_evaluate.py   the parallel walk-forward harness and the cache
+  scoring.py          fold scores, tables, win rates, improvement quartiles
+  registry.py         the run registry
+  suites.py           the named layouts
+  run.py              run, register, compare
+  order.py            the order-quantity prototype (calibrated quantiles)
+  plots.py            every figure, one palette
+  render_figures.py   figures for the notebooks
+  validate.py         the gate
+tools/                refit, gate, comparison and figure scripts
+tests/                pytest suite
+notebooks/            01_explore, 02_evaluate, 03_order (percent-format scripts)
+findings/             one dated file per item, with provenance
+report/               the write-up and its figures
+```
+
+## What is not claimed
+
+Public data only. M5 has no inventory, receipts or stock-outs, so a
+business-outcome backtest is not possible and no store-level result is
+implied. Two items and ten stores. New items with no history are not
+addressed. Deep learning, cloud and SQL are not used; the plan lists what
+comes next.
