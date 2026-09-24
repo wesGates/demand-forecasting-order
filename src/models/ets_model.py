@@ -6,7 +6,7 @@ import warnings
 
 import numpy as np
 
-from src.models.base import Context, _flat
+from src.models.base import Context, _flat, note_fallback
 
 
 def fit_predict_ets(ctx: Context) -> np.ndarray:
@@ -32,6 +32,7 @@ def fit_predict_ets(ctx: Context) -> np.ndarray:
 
     y = ctx.y[-730:]
     if len(y) < 2 * ctx.season:
+        note_fallback("ets: 28-day mean")
         return _flat(ctx.y[-28:].mean(), ctx)
 
     try:
@@ -49,4 +50,5 @@ def fit_predict_ets(ctx: Context) -> np.ndarray:
             f"({type(err).__name__}: {err}); using the 28-day mean instead.",
             stacklevel=2,
         )
+        note_fallback("ets: 28-day mean")
         return _flat(ctx.y[-28:].mean(), ctx)

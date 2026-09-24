@@ -61,6 +61,16 @@ class Context:
 
 Forecaster = Callable[[Context], np.ndarray]
 
+# A forecaster that has to give up on a fold - a failed fit, too little
+# history - says so here instead of returning a look-alike number in silence.
+# The harness clears the list before every call and records what it finds
+# after, so a fallback is scored as one and counted, never as the method.
+fallbacks: list[str] = []
+
+
+def note_fallback(reason: str) -> None:
+    fallbacks.append(reason)
+
 
 def _flat(value: float, ctx: Context) -> np.ndarray:
     """A constant forecast repeated across the horizon."""

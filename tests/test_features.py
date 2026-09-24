@@ -93,7 +93,7 @@ def test_assert_no_leakage_refuses_both_directions(series):
 
 def test_target_at_or_before_origin_is_refused(series):
     """
-    BUG: the module docstring says leakage "is checked mechanically" by
+    Regression test for a fixed defect: the module docstring says leakage "is checked mechanically" by
     `assert_no_leakage`, but nothing calls it. `build_fold_features` only
     checks the history side; a target day at or before the origin - a
     horizon of 0 or less - is silently accepted and features are built for it.

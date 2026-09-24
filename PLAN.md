@@ -70,6 +70,7 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
 | 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
 | 6. run registry | `item6-run-registry` | SQLite `run` + `fold_score` tables beside the cache, suites, `src.run`; 204 runs back-filled; first paired comparison shows item 5's fast-mover gain is marginal (54% wins, median +1.2%) |
 | 7. parallel harness | `item7-parallel-harness` | tasks per fold in worker processes, one thread per fit; every method identical to the old cache; every-day all-methods run 15 min (was ~2 h) |
+| 8. review fixes | `item8-review-fixes` | closure imputation backward-only (leak), events chosen pre-cutoff, fallbacks and unscored folds counted, cache checked against the data, `step1` in the key, atomic writes, registry guards; refit and comparison in the findings |
 
 Next, in order (revised 2026-09-23 after item 7; the registry and the
 parallel harness are done): (a) the pooled, level-relative model's own
@@ -79,6 +80,14 @@ store and per-forecast explanations; (e) the Fourier/STL item. All are
 described under "Later, not yet scheduled".
 
 ## Later, not yet scheduled
+
+- **Deferred by the 2026-09-23 review** (details in the owner's notes):
+  the pooled path at hundreds of items (design once per origin, index the
+  pool; one task per fold is serial over stores); the pooled quantile model
+  refits per store; a worker exception discards the whole run's rows;
+  Croston/TSB will need a service-level metric beside RMSSE and a per-method
+  minimum history; whether Martin Luther King Day (18.7% effect) joins the
+  holiday features is an experiment for the registry.
 
 - **Fourier terms and STL decomposition** (FPP §13.1). Daily data carries a
   weekly and an annual cycle; the classical models here take only the

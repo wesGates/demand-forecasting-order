@@ -69,6 +69,8 @@ from tqdm import tqdm
 from src import step2_data
 from src.features import FEATURE_VERSION, build_supervised, holiday_window
 from src.step1_problem import PROJECT_ROOT, Config
+from src import step1_problem
+from src.models import base
 from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, reset_run_state
 
 # --------------------------------------------------------------------------- #
@@ -76,7 +78,7 @@ from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, reset_run_sta
 # --------------------------------------------------------------------------- #
 
 
-def _supervised_path(cfg: Config, series_id: str):
+def _supervised_path(cfg: Config, series_id: str, extent: tuple = ()):
     # The panel version is in the key too: a loader change (closure imputation
     # was one) changes the sales the lags and targets are built from, and a
     # matrix built from the old panel must not be served for the new one.
@@ -88,6 +90,7 @@ def _supervised_path(cfg: Config, series_id: str):
             cfg.horizon,
             cfg.use_price,
             cfg.mask_holidays,
+            extent,  # first day, last day, rows: new days must rebuild the matrix
         )
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
@@ -105,7 +108,8 @@ def supervised_matrices(df: pd.DataFrame, cfg: Config) -> dict[str, pd.DataFrame
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
     out = {}
     for series_id, series in df.groupby("id", sort=True, observed=True):
-        path = _supervised_path(cfg, series_id)
+        extent = (str(series["date"].min().date()), str(series["date"].max().date()), len(series))
+        path = _supervised_path(cfg, series_id, extent)
         if path.exists():
             out[series_id] = pd.read_parquet(path)
         else:
@@ -115,7 +119,9 @@ def supervised_matrices(df: pd.DataFrame, cfg: Config) -> dict[str, pd.DataFrame
                 use_price=cfg.use_price,
                 mask_holidays=cfg.mask_holidays,
             )
-            matrix.to_parquet(path, index=False)
+            tmp = path.with_suffix(".tmp")
+            matrix.to_parquet(tmp, index=False)
+            tmp.replace(path)
             out[series_id] = matrix
     return out
 
@@ -199,6 +205,7 @@ def _method_code(method: str) -> str:
     # a forgotten version bump must not serve a stale run.
     parts = [
         _code_digest(Path(__file__)),
+        _code_digest(Path(step1_problem.__file__)),  # fold layout, holdout, scale window
         _code_digest(Path(base.__file__)),
         _code_digest(Path(step4_models.MODULE_OF[method].__file__)),
         _code_digest(Path(features.__file__)),
@@ -258,7 +265,9 @@ def _adopt_cached(cfg: Config, method: str) -> Path | None:
 def _write_cached(cfg: Config, method: str, frame: pd.DataFrame) -> Path:
     path = _method_cache_path(cfg, method)
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(path, index=False)
+    tmp = path.with_suffix(".tmp")
+    frame.to_parquet(tmp, index=False)
+    tmp.replace(path)  # atomic: a kill mid-write leaves no half file behind
     path.with_suffix(".json").write_text(
         json.dumps(
             {
@@ -274,7 +283,7 @@ def _write_cached(cfg: Config, method: str, frame: pd.DataFrame) -> Path:
 
 def _read_cached(cfg: Config, method: str) -> pd.DataFrame | None:
     path = _method_cache_path(cfg, method)
-    if path.exists():
+    if path.exists() and path.with_suffix(".json").exists():
         return pd.read_parquet(path)
     adopted = _adopt_cached(cfg, method)
     if adopted is not None:
@@ -331,6 +340,8 @@ def run_walk_forward(
             frame = _read_cached(cfg, name)
             if frame is not None:
                 cached[name] = frame
+    if cached:
+        _check_actuals(df, cached)
     to_run = [m for m in methods if m not in cached]
     if not to_run:
         return _ordered(cached, methods)
@@ -357,7 +368,9 @@ def run_walk_forward(
     for chunk in _map(state, _forecast_task, tasks, n_jobs, progress, desc="folds"):
         rows.extend(chunk)
 
-    fresh = pd.DataFrame(rows)
+    global _STATE
+    _STATE = {}  # the in-process path leaves the state behind otherwise
+    fresh = pd.DataFrame(rows, columns=ROW_COLUMNS)  # empty when every fold was skipped
     for name in to_run:
         part = (
             fresh[fresh["method"] == name]
@@ -382,6 +395,34 @@ def run_walk_forward(
 # except the read-only state handed to each worker at start-up.
 
 _STATE: dict = {}
+
+ROW_COLUMNS = [
+    "id", "item_id", "store_id", "fold", "origin", "week_kind", "method", "kind",
+    "horizon", "target_date", "actual", "forecast", "scale", "closure",
+    "holiday_window", "fallback",
+]
+
+
+def _check_actuals(df: pd.DataFrame, cached: dict[str, pd.DataFrame]) -> None:
+    """
+    A cached run must describe the data on disk now. The key names the
+    configuration and the code, not the data, so a changed data file (or a
+    cache copied next to different data) would otherwise be served without
+    a word. The actuals in the cache and the panel's sales must agree.
+    """
+    sales = df.set_index(["id", "date"])["sales"]
+    for name, frame in cached.items():
+        if len(frame) == 0:
+            continue
+        idx = pd.MultiIndex.from_arrays([frame["id"].astype(str), pd.to_datetime(frame["target_date"])])
+        expected = sales.reindex(idx).to_numpy(dtype=float)
+        got = frame["actual"].to_numpy(dtype=float)
+        if np.isnan(expected).any() or not np.allclose(expected, got, equal_nan=True):
+            raise ValueError(
+                f"the cached {name!r} run does not match the data on disk: its actuals differ "
+                "from the panel's sales. The data changed, or this cache belongs to other data. "
+                "Delete the cached file or rebuild with use_cache=False."
+            )
 
 
 def _run_state(df: pd.DataFrame, cfg: Config, to_run: list[str]) -> dict:
@@ -436,7 +477,7 @@ def _tasks(state: dict) -> list[tuple]:
     return [(None, fold) for fold in folds]
 
 
-def _init_worker(state: dict) -> None:
+def _init_worker(state: dict, pin: bool = True) -> None:
     """
     Runs once per worker process: take the state and pin every numerical
     library to one thread. The environment variables catch libraries not yet
@@ -447,12 +488,13 @@ def _init_worker(state: dict) -> None:
     """
     global _STATE
     _STATE = state
-    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ[var] = "1"
-    import xgboost  # noqa: F401  - load it now, under the limit
-    from threadpoolctl import threadpool_limits
+    if pin:  # a worker process: pin for its whole life
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            os.environ[var] = "1"
+        import xgboost  # noqa: F401  - load it now, under the limit
+        from threadpoolctl import threadpool_limits
 
-    threadpool_limits(limits=1)
+        threadpool_limits(limits=1)
     from src.models import arima_model
 
     arima_model.arima_orders.clear()
@@ -504,7 +546,9 @@ def _fold_context(series_id: str, fold: int, state: dict):
 def _forecast_rows(ctx: Context, meta: dict, to_run: list[str]) -> list[dict]:
     rows = []
     for name in to_run:
+        base.fallbacks.clear()
         forecast = np.asarray(ALL_FORECASTERS[name](ctx), dtype=float)[: len(meta["actual"])]
+        fallback = bool(base.fallbacks)
         for h, (day, a, f, c, w) in enumerate(
             zip(meta["dates"], meta["actual"], forecast, meta["closure"], meta["in_window"], strict=True), 1
         ):
@@ -525,6 +569,7 @@ def _forecast_rows(ctx: Context, meta: dict, to_run: list[str]) -> list[dict]:
                     "scale": meta["scale"],
                     "closure": c,
                     "holiday_window": w,
+                    "fallback": fallback,
                 }
             )
     return rows
@@ -565,13 +610,18 @@ def _first_arima_order(series_id: str):
         ctx, _ = built
         arima_model.arima_orders.pop(series_id, None)
         arima_model.fit_predict_arima(ctx)
-        return series_id, arima_model.arima_orders.get(series_id)
-    return series_id, None
+        return series_id, arima_model.arima_orders.get(series_id), True
+    return series_id, None, False
 
 
 def _select_arima_orders(state: dict, n_jobs: int, progress: bool) -> dict:
     orders = {}
-    for sid, order in _map(state, _first_arima_order, state["ids"], n_jobs, progress, desc="arima orders"):
+    for sid, order, scored in _map(state, _first_arima_order, state["ids"], n_jobs, progress, desc="arima orders"):
+        if scored and order is None:
+            raise RuntimeError(
+                f"ARIMA could not choose an order for {sid} on its first scored window; "
+                "refusing to let each worker choose its own on a later window"
+            )
         if order is not None:
             orders[sid] = order
     return orders
@@ -581,9 +631,12 @@ def _map(state: dict, fn, items: list, n_jobs: int, progress: bool, desc: str):
     """Apply `fn` to `items` in order, in `n_jobs` worker processes (or in-process when 1)."""
     n_jobs = min(n_jobs, max(1, len(items)))
     if n_jobs == 1:
-        _init_worker(state)
-        for item in tqdm(items, desc=desc, disable=not progress):
-            yield fn(item)
+        from threadpoolctl import threadpool_limits
+
+        _init_worker(state, pin=False)
+        with threadpool_limits(limits=1):  # for the duration of the run only
+            for item in tqdm(items, desc=desc, disable=not progress):
+                yield fn(item)
         return
     import multiprocessing as mp
 

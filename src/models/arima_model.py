@@ -7,7 +7,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from src.models.base import Context, _flat
+from src.models.base import Context, _flat, note_fallback
 
 # Regressors handed to ARIMA. All are known in advance for any target date, so
 # they are legitimate predictors in FPP's sense (§10.1). `pre_holiday` is the
@@ -91,6 +91,7 @@ def fit_predict_arima(ctx: Context) -> np.ndarray:
     hist = ctx.history.iloc[-ARIMA_FIT_DAYS:]
     y = hist["sales"].to_numpy(dtype=float)
     if len(y) < 4 * ctx.season:
+        note_fallback("arima: 28-day mean")
         return _flat(ctx.y[-28:].mean(), ctx)
     x_hist, x_future = _arima_exog(hist), _arima_exog(ctx.targets)
 
@@ -111,4 +112,5 @@ def fit_predict_arima(ctx: Context) -> np.ndarray:
             f"({type(err).__name__}: {err}); using the 28-day mean instead.",
             stacklevel=2,
         )
+        note_fallback("arima: 28-day mean")
         return _flat(ctx.y[-28:].mean(), ctx)

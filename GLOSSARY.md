@@ -60,7 +60,7 @@ changes; a script for it is kept outside the repository.
 
 ## The validator's negative controls
 
-The validator (`python -m src.validate`) runs nine checks. Two of them are
+The validator (`python -m src.validate`) runs ten checks. Two of them are
 *negative controls*: tests on synthetic data where the right answer is known
 and any model that does "too well" must be cheating.
 
@@ -239,3 +239,43 @@ fit is deterministic on the same platform. XGBoost's column subsampling
 can still give different (but each reproducible) results on a different
 operating system, so cross-machine identity is claimed only for the same
 OS and library versions.
+
+## Rules added by the review (item 8)
+
+**Closure imputation is backward-only.** A closure day (Christmas) is
+filled with the mean of the same weekday over the four *preceding* weeks,
+skipping days inside a holiday window. Weeks after the closure are never
+used: Christmas 2015 sits inside the scored year, and a value borrowed from
+January 2016 would have entered the lags, the training rows and the
+seasonal naïve of every fold with an origin in the following four weeks
+(FPP §5.10; the closure-as-missing case is §13.7). `CACHE_VERSION` 3.
+
+**Events are chosen before the cutoff.** `event_effects(df, calendar,
+cutoff)` measures each event on the data before the first scored day, so
+the holiday feature set is not selected on the test period (FPP §5.8). On
+the study's item the same events clear the threshold either way.
+
+**Unscored fold.** A fold whose forecast is missing or whose RMSSE scale is
+zero or undefined. It is counted (`n_unscored`) and left out of every
+average and every paired comparison, rather than scored as infinitely bad
+or silently dropped.
+
+**Fallback.** A forecaster that cannot fit a fold (a failed ETS or ARIMA
+estimation) returns the 28-day mean and says so through
+`base.note_fallback`; the harness records `fallback` on every row of that
+forecast and the tables count them (`n_fallback`). A method that "won" on
+fallbacks is visible as such.
+
+**Cached runs are checked against the data.** The cache key names the
+configuration and the code, not the data. On every cache read the harness
+compares the cached actuals with the panel's sales; a mismatch (data
+changed, or a cache next to other data) is an error, never a silent result.
+
+**The daily grid is asserted.** Every series must be an unbroken run of
+days, because lags, benchmarks and the RMSSE scale are positional. A source
+with gaps must be reindexed and flagged first (FPP §13.7).
+
+**Run rows are immutable.** Recording a run again keeps the first row (its
+time and commit describe when the forecasts were made) and appends the
+note. A paired comparison skips folds where the reference RMSSE is zero and
+reports how many (`n_undefined`).

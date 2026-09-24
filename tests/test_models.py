@@ -129,7 +129,7 @@ def test_supervised_cache_key_tracks_feature_version(cfg, monkeypatch):
 
 def test_supervised_cache_is_not_served_across_a_panel_version_bump(cfg, monkeypatch):
     """
-    BUG: the predictions cache key includes `step2_data.CACHE_VERSION`, so a
+    Regression test for a fixed defect: the predictions cache key includes `step2_data.CACHE_VERSION`, so a
     loader change forces a rerun. The supervised-matrix cache key does not:
     after bumping CACHE_VERSION (as v2 did, when closure imputation changed
     the sales the lags and targets are built from) the rerun trains XGBoost
@@ -192,7 +192,7 @@ def test_arima_order_is_selected_on_this_runs_first_training_window(
     panel, tmp_path, monkeypatch
 ):
     """
-    BUG: `fit_predict_arima` documents that the order is chosen "once per
+    Regression test for a fixed defect: `fit_predict_arima` documents that the order is chosen "once per
     series by AICc on that series' first training window" and "never sees a
     scored day". The choice is memoised in a module-level dict that
     `run_walk_forward` never clears, so a second run in the same process

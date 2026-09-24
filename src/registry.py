@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS run (
     source        TEXT NOT NULL,      -- run | backfill | rekey
     run_seconds   REAL,
     note          TEXT,
-    n_scored      INTEGER,
+    n_scored      INTEGER, n_unscored INTEGER, n_fallback INTEGER,
     rmsse_mean    REAL, rmsse_median REAL, rmsse_normal REAL, rmsse_holiday REAL,
     bias_mean     REAL,
     win_vs_ref    REAL, impr_mean REAL, impr_q1 REAL, impr_median REAL, impr_q3 REAL,
@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS fold_score (
     rmsse       REAL, bias REAL, mae REAL, rmse REAL,
     mean_actual REAL,
     n_days      INTEGER,
+    unscored    INTEGER,
+    fallback    INTEGER,
     PRIMARY KEY (run_id, id, fold)
 );
 CREATE INDEX IF NOT EXISTS fold_score_origin ON fold_score (id, origin);
@@ -111,6 +113,13 @@ def connect(cfg: Config | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.executescript(SCHEMA)
+    # columns added after the first release; harmless when already present
+    for table, column, kind in (("run", "n_unscored", "INTEGER"), ("run", "n_fallback", "INTEGER"),
+                                ("fold_score", "unscored", "INTEGER"), ("fold_score", "fallback", "INTEGER")):
+        try:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        except sqlite3.OperationalError:
+            pass
     return con
 
 
@@ -165,6 +174,8 @@ def _headline(scores: pd.DataFrame, method: str, bench: pd.DataFrame) -> dict:
     row = summarise(scores).set_index("method").loc[method]
     out = {
         "n_scored": int(row["n_folds"]),
+        "n_unscored": int(row["n_unscored"]),
+        "n_fallback": int(row["n_fallback"]),
         "rmsse_mean": float(row["rmsse_mean"]),
         "rmsse_median": float(row["rmsse_median"]),
         "rmsse_normal": float(row["rmsse_normal"]),
@@ -188,21 +199,36 @@ def _headline(scores: pd.DataFrame, method: str, bench: pd.DataFrame) -> dict:
     return out
 
 
-def _insert(con: sqlite3.Connection, run_row: dict, scores: pd.DataFrame) -> None:
+def _insert(con: sqlite3.Connection, run_row: dict, scores: pd.DataFrame) -> bool:
+    """
+    A run is recorded once. Recording the same run again (same forecasts,
+    same code) keeps the first row - its time and commit describe when the
+    forecasts were made - and only appends the new note. Returns whether a
+    row was written.
+    """
+    existing = con.execute("SELECT note FROM run WHERE run_id = ?", (run_row["run_id"],)).fetchone()
+    if existing is not None:
+        if run_row.get("note"):
+            merged = f"{existing[0]} | {run_row['note']}" if existing[0] else run_row["note"]
+            con.execute("UPDATE run SET note = ? WHERE run_id = ?", (merged, run_row["run_id"]))
+            con.commit()
+        return False
     cols = ", ".join(run_row)
     marks = ", ".join("?" for _ in run_row)
-    con.execute(f"INSERT OR REPLACE INTO run ({cols}) VALUES ({marks})", list(run_row.values()))
-    con.execute("DELETE FROM fold_score WHERE run_id = ?", (run_row["run_id"],))
+    con.execute(f"INSERT INTO run ({cols}) VALUES ({marks})", list(run_row.values()))
     rows = scores[["id", "item_id", "store_id", "fold", "origin", "week_kind",
-                   "rmsse", "bias", "mae", "rmse", "mean_actual", "n_days"]].copy()
+                   "rmsse", "bias", "mae", "rmse", "mean_actual", "n_days", "unscored", "fallback"]].copy()
     rows.insert(0, "run_id", run_row["run_id"])
     rows["origin"] = pd.to_datetime(rows["origin"]).dt.strftime("%Y-%m-%d")
     rows["rmsse"] = rows["rmsse"].replace([np.inf, -np.inf], np.nan)
+    rows["unscored"] = rows["unscored"].astype(int)
+    rows["fallback"] = rows["fallback"].astype(int)
     con.executemany(
-        "INSERT INTO fold_score VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO fold_score VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         rows.itertuples(index=False, name=None),
     )
     con.commit()
+    return True
 
 
 def _run_row(cfg: Config, method: str, predictions: pd.DataFrame, *, source: str,
@@ -319,6 +345,8 @@ def backfill(cfg: Config | None = None, verbose: bool = True) -> int:
     have = {r[0] for r in con.execute("SELECT run_id FROM run")}
     n = 0
     for meta in sorted(folder.glob("*.json")):
+        if meta.stem in have:
+            continue
         info = json.loads(meta.read_text())
         run_cfg = _config_from_sidecar(info, cfg)
         method = info["method"]
@@ -334,9 +362,8 @@ def backfill(cfg: Config | None = None, verbose: bool = True) -> int:
         )
         row["run_id"] = meta.stem  # the file on disk names the run
         row["cache_file"] = parquet.name
-        if row["run_id"] in have:
+        if not _insert(con, row, scores):
             continue
-        _insert(con, row, scores)
         n += 1
         if verbose:
             print(f"  {row['run_id']:<40} {row['suite'] or '-':<9} {row['item_ids']:<12} "
@@ -371,11 +398,9 @@ def predecessor(run_id: str, cfg: Config | None = None) -> str | None:
         me = dict(zip(cols, me))
         row = con.execute(
             """SELECT run_id FROM run
-               WHERE method = ? AND item_ids = ? AND store_ids = ? AND fold_step = ? AND n_folds = ?
-                 AND IFNULL(pool_by,'') = IFNULL(?,'') AND run_id != ? AND recorded_at < ?
+               WHERE method = ? AND config_json = ? AND run_id != ? AND recorded_at < ?
                ORDER BY recorded_at DESC LIMIT 1""",
-            (me["method"], me["item_ids"], me["store_ids"], me["fold_step"], me["n_folds"],
-             me["pool_by"], run_id, me["recorded_at"]),
+            (me["method"], me["config_json"], run_id, me["recorded_at"]),
         ).fetchone()
         return row[0] if row else None
     finally:
@@ -399,11 +424,13 @@ def compare(run_a: str, run_b: str, cfg: Config | None = None) -> dict:
     pair = a.merge(b, on=["id", "origin"], suffixes=("_a", "_b")).dropna(subset=["rmsse_a", "rmsse_b"])
     if pair.empty:
         raise ValueError("the two runs share no store-origins")
-    gain = (pair["rmsse_a"] - pair["rmsse_b"]) / pair["rmsse_a"] * 100
+    undefined = pair["rmsse_a"] <= 0  # a percentage change from zero is undefined
+    gain = ((pair["rmsse_a"] - pair["rmsse_b"]) / pair["rmsse_a"] * 100)[~undefined]
     return {
         "a": run_a,
         "b": run_b,
         "n_paired": int(len(pair)),
+        "n_undefined": int(undefined.sum()),
         "win_rate_b": float((pair["rmsse_b"] < pair["rmsse_a"]).mean()),
         "rmsse_a": float(pair["rmsse_a"].mean()),
         "rmsse_b": float(pair["rmsse_b"].mean()),

@@ -51,7 +51,7 @@ from src.step1_problem import Config
 # Bump when load_m5 or trim_prelaunch_zeros changes what they produce. The
 # cache key includes this, so old parquet files stop being served instead of
 # silently returning a panel built by superseded logic.
-CACHE_VERSION = 2
+CACHE_VERSION = 3  # 3: closures imputed from preceding weeks only (2026-09-23)
 
 ID_COLS = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id"]
 CAL_COLS = [
@@ -169,12 +169,23 @@ def impute_closures(df: pd.DataFrame) -> pd.DataFrame:
         return df
     by_key = df.set_index(["id", "date"])["sales"]
     closed_keys = set(zip(df.loc[closed, "id"], df.loc[closed, "date"], strict=True))
+    from src.features import holiday_window  # local import: features never imports the loader
+
+    in_window = holiday_window(df).to_numpy(dtype=bool)
+    busy = set(zip(df.loc[in_window, "id"], df.loc[in_window, "date"], strict=True))
     replacement = {}
     for sid, day in closed_keys:
         values = []
-        for k in (-4, -3, -2, -1, 1, 2, 3, 4):
+        # Preceding weeks only. A closure inside the scored year (Christmas
+        # 2015) must not be filled from January 2016: every fold with an
+        # origin in the following weeks would then train on, and benchmark
+        # against, a value that partly knows the future (FPP §5.10). Days
+        # inside a holiday window are skipped too, so the replacement is an
+        # ordinary same-weekday, as §13.7's "missing on a public holiday"
+        # case intends.
+        for k in (-4, -3, -2, -1):
             key = (sid, day + pd.Timedelta(days=7 * k))
-            if key in by_key.index and key not in closed_keys:
+            if key in by_key.index and key not in closed_keys and key not in busy:
                 values.append(float(by_key[key]))
         if values:
             replacement[(sid, day)] = float(np.mean(values))
@@ -322,6 +333,7 @@ def load_panel(cfg: Config, use_cache: bool = True, verbose: bool = True) -> pd.
 
     raw = load_m5(cfg.data_dir, **cfg.subset)
     df = impute_closures(trim_prelaunch_zeros(raw))
+    assert_daily_grid(df)
 
     if verbose:
         dropped = len(raw) - len(df)
@@ -334,8 +346,29 @@ def load_panel(cfg: Config, use_cache: bool = True, verbose: bool = True) -> pd.
             f"  zero-sales share after  : {(df['sales'] == 0).mean():.1%}"
         )
 
-    df.to_parquet(path, index=False)
+    tmp = path.with_suffix(".tmp")
+    df.to_parquet(tmp, index=False)
+    tmp.replace(path)  # atomic: a killed build never leaves a half-written panel
     return df
+
+
+def assert_daily_grid(df: pd.DataFrame) -> None:
+    """
+    Every series must be one unbroken run of days. Every lag, rolling window,
+    benchmark and the RMSSE scale downstream is positional (`sales[-7]` means
+    "a week ago"), so a missing day would shift all of them by one with no
+    error. M5 has no gaps; a panel from another source (a database) may. FPP
+    §13.7: fill or flag missing days first.
+    """
+    gaps = df.groupby("id", observed=True)["date"].agg(
+        lambda s: int((s.sort_values().diff().dropna() != pd.Timedelta(days=1)).sum())
+    )
+    bad = gaps[gaps > 0]
+    if len(bad):
+        raise ValueError(
+            f"{len(bad)} series have gaps in their daily dates (e.g. {bad.index[:3].tolist()}); "
+            "the panel must be a complete daily grid - reindex and flag the missing days first"
+        )
 
 
 if __name__ == "__main__":
