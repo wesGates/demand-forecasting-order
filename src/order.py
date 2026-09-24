@@ -1,56 +1,52 @@
 """
-From forecast to order quantity (FPP §5.5, §5.9).
+From forecast to order quantity (FPP §5.5, §5.9). The ordering prototype.
 
-Everything before this module produces a *point* forecast and scores it with
-a symmetric error. Neither is what a replenishment decision needs.
+This module predates item 1. It is the calibrated-quantile code, and it is
+still the only order-quantity code in the repository. Item 1 compared it
+with an XGBoost trained on the quantile objective and found that the
+calibrated quantiles match the fitted ones within 0.002 relative pinball at
+a twenty-sixth of the fitting cost. The quantile work continues from here
+(PLAN.md, "the pooled, level-relative model's own residuals and calibrated
+quantiles").
 
-**The order is a weekly total, not a daily point.** A Sunday order covers
-Monday to Sunday, so the error that reaches the shelf is the sum of seven
-forecasts minus the sum of seven actuals. Daily errors partly cancel inside a
-week, and the daily RMSSE never sees that they did. `weekly_totals` builds the
-quantity the order actually is.
+What it does, and why:
 
-**Ordering the mean stocks out half the time.** A point forecast is the
-centre of what might happen; demand lands above it about as often as below.
-The quantity to order is a *quantile*: the level that covers demand with a
-chosen probability τ. Which τ is an economic question, not a statistical one
-- the critical fractile τ = Cu / (Cu + Co), understock cost over the sum of
-both. Above 0.5 when running out costs more than holding (ambient grocery);
-below 0.5 when holding costs more (fresh produce that goes in the bin). M5
-items are anonymised, so this study cannot know τ for its item, and reports a
-range instead - and whether the method ranking changes across it.
+- The order is a weekly total. A Sunday order covers Monday to Sunday, so
+  the error that reaches the shelf is the sum of seven forecasts minus the
+  sum of seven actuals. Daily errors partly cancel inside a week and the
+  daily RMSSE never sees it. `weekly_totals` builds the quantity the order
+  actually is.
+- Ordering the mean runs out about half the time. Demand lands above a
+  point forecast as often as below it. The quantity to order is a quantile,
+  the level that covers demand with a chosen probability τ. Which τ is an
+  economic question, the critical fractile τ = Cu / (Cu + Co). Above 0.5
+  when running out costs more than holding (ambient grocery), below 0.5 when
+  holding costs more (fresh produce that ends up in the bin). M5 items are
+  anonymised, so the study reports a range of τ and whether the method
+  ranking changes across it.
+- Where the quantiles come from. None of the methods produces a
+  distribution. FPP §5.5's route works for all of them: a method's own past
+  errors are its uncertainty. For each store and method, the weekly errors
+  over a calibration year give an error distribution, and the τ-quantile
+  forecast for a later week is the point forecast plus the τ-quantile of
+  those errors. A method with tighter errors earns a smaller add-on, and a
+  biased method gets corrected for free because its mean error is inside the
+  distribution.
+- Calibration weeks come before scored weeks. Estimating the quantile on
+  the weeks it is judged on gives 90% coverage by construction. The run
+  that feeds this module scores two years, the first calibrates and the
+  second is judged, so every holiday appears in both.
+- Pinball loss (FPP §5.9, the quantile score) is the metric, with the
+  book's factor of two so that τ = 0.5 equals the absolute error:
 
-**Where the quantiles come from.** None of the nine methods produces a
-distribution, and XGBoost's point forecast is one number. FPP §5.5's route
-works for all of them alike: a method's own past errors are its uncertainty.
-For each store and method, the weekly errors from a *calibration year* give
-an empirical error distribution; the τ-quantile forecast for a later week is
-the point forecast plus the τ-quantile of those errors. A method with tighter
-errors earns a smaller add-on. That is the whole reward for accuracy, and a
-biased method is corrected automatically - the mean error is inside the
-distribution being shifted by.
+      2 τ (y - q)        if y >= q   (under-forecast, a shortfall)
+      2 (1 - τ) (q - y)  if y <  q   (over-forecast, a surplus)
 
-**Calibration weeks must precede scored weeks.** Estimating the quantile on
-the weeks it is then judged on gives 90% coverage by construction. The run
-that feeds this module scores two years; the first calibrates and the second
-is judged. Every holiday appears in both, which a split of a single year
-could not give.
-
-**Pinball loss** (FPP §5.9, the quantile score) is the metric, with the book's
-factor of two so that τ = 0.5 equals the absolute error:
-
-    2 τ (y - q)        if y >= q   (under-forecast: shortfall)
-    2 (1 - τ) (q - y)  if y <  q   (over-forecast: surplus)
-
-At τ = 0.9 a unit of shortfall costs nine times a unit of surplus. The
-asymmetry the decision cares about is inside the metric, not outside it. A
-symmetric metric cannot see an asymmetric cost, and which way it misleads
-depends on economics it has no access to.
-
-Pinball losses at different τ are on different scales and must not be
-averaged across τ. Within one τ they are in units, so the report divides by
-the store's mean weekly sales to make a 100-unit store and a 15-unit store
-comparable - the same reason RMSSE exists.
+  At τ = 0.9 a unit of shortfall costs nine times a unit of surplus. The
+  asymmetry the decision cares about sits inside the metric.
+- Pinball losses at different τ are on different scales and are never
+  averaged across τ. Within one τ they are in units, so the report divides by
+  the store's mean weekly sales, for the same reason RMSSE exists.
 """
 
 from __future__ import annotations
@@ -58,9 +54,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# The service levels reported. Symmetric around 0.5 so the perishable and
-# the ambient direction are both covered, plus the 0.9 an ambient item would
-# typically use.
+# The service levels reported. Symmetric around 0.5 so the perishable and the
+# ambient direction are both covered, plus the 0.9 an ambient item would use.
 TAUS = (0.3, 0.5, 0.7, 0.9)
 
 WEEK_KEYS = ["id", "item_id", "store_id", "fold", "origin", "week_kind", "method", "kind"]
@@ -68,11 +63,11 @@ WEEK_KEYS = ["id", "item_id", "store_id", "fold", "origin", "week_kind", "method
 
 def weekly_totals(predictions: pd.DataFrame) -> pd.DataFrame:
     """
-    One row per series-fold-method: the week's actual and forecast totals.
+    One row per series-fold-method with the week's actual and forecast totals.
 
     Closure days are dropped first, as in `score_folds`, so both totals cover
-    the same days. `error` is actual minus forecast: **positive is a
-    shortfall**, the sign a replenishment decision cares about.
+    the same days. `error` is actual minus forecast. Positive is a shortfall,
+    the sign a replenishment decision cares about.
     """
     p = predictions
     if "closure" in p:
@@ -93,8 +88,8 @@ def weekly_totals(predictions: pd.DataFrame) -> pd.DataFrame:
 
 def calibrate(weekly: pd.DataFrame, scored_from: pd.Timestamp, taus=TAUS) -> pd.DataFrame:
     """
-    Per (series, method, τ): the empirical τ-quantile of weekly errors over
-    the calibration folds - every fold whose origin is before `scored_from`.
+    Per (series, method, τ), the empirical τ-quantile of weekly errors over the
+    calibration folds, meaning every fold whose origin is before `scored_from`.
 
     Returns `offset`, the add-on to a point forecast, and `n_calib`, how many
     weeks it rests on.
@@ -119,10 +114,10 @@ def calibrate_expanding(
     weekly: pd.DataFrame, scored_from: pd.Timestamp, taus=TAUS
 ) -> pd.DataFrame:
     """
-    Like `calibrate`, but the calibration window grows: each scored fold's
-    offset uses every fold before it, including earlier scored folds. This is
-    what a live system would do - recalibrate as errors accumulate. Returns
-    one row per (series, method, fold, τ).
+    Like `calibrate`, but the calibration window grows. Each scored fold's
+    offset uses every fold before it, earlier scored folds included. This is
+    what a live system would do, recalibrate as errors accumulate. Returns one
+    row per (series, method, fold, τ).
     """
     rows = []
     for (sid, method), g in weekly.groupby(["id", "method"], observed=True):
@@ -151,7 +146,7 @@ def quantile_forecasts(
     weekly: pd.DataFrame, offsets: pd.DataFrame, scored_from: pd.Timestamp
 ) -> pd.DataFrame:
     """
-    The scored weeks with a τ-quantile forecast `q` for every τ in `offsets`:
+    The scored weeks with a τ-quantile forecast `q` for every τ in `offsets`,
     the point forecast plus that series-method's offset. `offsets` may be
     fixed (from `calibrate`) or per fold (from `calibrate_expanding`).
     """
@@ -190,10 +185,10 @@ def summarise_quantiles(
     scored: pd.DataFrame, week_kind: str | None = None
 ) -> pd.DataFrame:
     """
-    Per method and τ: mean relative pinball loss, achieved coverage, and the
-    mean shortfall and surplus in units per week. Coverage should sit near τ;
-    the gap between them is how well the calibration transferred from one
-    year to the next.
+    Per method and τ, the mean relative pinball loss, achieved coverage, and
+    the mean shortfall and surplus in units per week. Coverage should sit
+    near τ. The gap between them is how well the calibration carried over from
+    one year to the next.
     """
     if week_kind is not None:
         scored = scored[scored["week_kind"] == week_kind]
@@ -213,8 +208,7 @@ def summarise_quantiles(
 def ranking_by_tau(summary: pd.DataFrame) -> pd.DataFrame:
     """
     Methods down, τ across, relative pinball in the cells, best first at
-    τ = 0.5. The table that answers "does the model ranking change with the
-    cost asymmetry?"
+    τ = 0.5. Answers whether the model ranking changes with the cost asymmetry.
     """
     table = summary.pivot_table(index="method", columns="tau", values="pinball_rel")
     order = (
@@ -229,8 +223,8 @@ def ranking_by_tau(summary: pd.DataFrame) -> pd.DataFrame:
 # Daily quantiles: native (fitted) against calibrated (point + error quantile)
 # --------------------------------------------------------------------------- #
 
-# Methods whose forecasts *are* quantiles, keyed by family. A family's entries
-# map τ to the registered method name that produces that quantile.
+# Methods whose forecasts are quantiles already, keyed by family. A family's
+# entries map τ to the registered method name that produces that quantile.
 NATIVE_QUANTILE_FAMILIES: dict[str, dict[float, str]] = {
     "xgboost_q": {
         0.3: "xgboost_q30",
@@ -265,14 +259,13 @@ def daily_calibrated_quantiles(
     taus=TAUS,
 ) -> pd.DataFrame:
     """
-    Daily τ-quantile forecasts for point-forecast methods, "the same
-    treatment" as the fitted quantile model but applied after the fact.
+    Daily τ-quantile forecasts for the point-forecast methods, the same
+    treatment as the fitted quantile model but applied after the fact.
 
     For each series, method and horizon, the τ-quantile of the daily errors
-    (actual minus forecast) over the calibration folds (origin before
-    `scored_from`) is the add-on; on the scored folds q = forecast + add-on.
-    Per horizon, because the error spread grows with days ahead. One row per
-    scored day, method and τ.
+    (actual minus forecast) over the calibration folds is the add-on, and on
+    the scored folds q = forecast + add-on. Per horizon, because the error
+    spread grows with days ahead. One row per scored day, method and τ.
     """
     p = predictions[predictions["method"].isin(methods)]
     if "closure" in p:
@@ -373,11 +366,11 @@ def weekly_native_quantiles(
     families=NATIVE_QUANTILE_FAMILIES,
 ) -> pd.DataFrame:
     """
-    Weekly order-up-to levels from a fitted quantile model: the sum of its
-    daily τ-quantiles over the fold. A sum of quantiles is not the quantile
-    of a sum - for τ above 0.5 it over-covers, below 0.5 it under-covers -
-    so this is reported beside the calibrated weekly table, not in place of
-    it, and the coverage column says what the sum actually delivered.
+    Weekly order-up-to levels from a fitted quantile model, the sum of its
+    daily τ-quantiles over the fold. A sum of quantiles is not the quantile of
+    a sum. For τ above 0.5 it over-covers and below 0.5 it under-covers, so
+    this sits beside the calibrated weekly table and the coverage column says
+    what the sum actually delivered.
     """
     daily = daily_native_quantiles(predictions, scored_from, families)
     if daily.empty:
@@ -409,14 +402,14 @@ if __name__ == "__main__":
     from src.step4_models import ALL_FORECASTERS
     from src.step5_evaluate import run_walk_forward
 
-    # Two years of folds: the first calibrates, the second is judged. The
-    # scored year is exactly the layout the point-forecast tables use.
+    # Two years of folds. The first calibrates and the second is judged. The
+    # scored year is the same layout the point-forecast tables use.
     scored = Config(item_ids=STUDY_ITEMS)
     both = Config(item_ids=STUDY_ITEMS, n_folds=2 * scored.n_folds)
     panel = load_panel(both, verbose=False)
     scored_from = scored.holdout_start(panel["date"].max()) - pd.Timedelta(days=1)
 
-    # The two-year run is for the point-forecast methods only: the fitted
+    # The two-year run is for the point-forecast methods only. The fitted
     # quantile model needs no calibration year, and fitting it on 104 folds
     # would cost an hour for nothing.
     fitted_names = [n for f in NATIVE_QUANTILE_FAMILIES.values() for n in f.values()]
@@ -467,8 +460,8 @@ if __name__ == "__main__":
     print(ranking_by_tau(summarise_quantiles(scored_x)).round(3).to_string())
 
     # Fitted quantiles against calibrated ones, at the daily level where the
-    # fitted model's outputs are quantiles by construction. The fitted
-    # methods run on the scored year only; the calibrated ones need year 1.
+    # fitted model's outputs are quantiles by construction. The fitted methods
+    # run on the scored year only. The calibrated ones need year 1 as well.
     fitted = run_walk_forward(panel, scored, progress=False, methods=fitted_names)
     daily = pd.concat(
         [

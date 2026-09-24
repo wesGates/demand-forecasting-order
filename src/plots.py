@@ -2,30 +2,26 @@
 Shared plotting.
 
 Every function takes an optional `ax` and returns it, so plots compose into
-grids and notebooks without the module owning any figure layout.
+grids and notebooks without this module owning any figure layout.
 
-Design rules followed here, so they are consistent and defensible:
+The design rules, so the figures stay consistent:
 
-- **The book's look.** Every figure uses the style of *Forecasting: Principles
-  and Practice* (the Pythonic edition's figures, which follow ggplot2's default
-  theme): a light grey panel with white gridlines, no axis spines, black
-  actuals, and the Okabe-Ito palette - the colour-blind-safe set the book
-  itself uses. Matching the book makes the report's figures read as
-  continuations of the reference, not as a second visual language.
-- **Legends sit below the axes, never on the data.** Every legend is placed
-  by `legend_below`; nothing is ever drawn inside the plotting area.
-- **One hue per single-series chart.** Colour carries identity, never magnitude.
-  A darker-where-bigger bar chart double-encodes the bar length and wastes the
-  only free channel.
-- **Emphasis over enumeration.** Where one series matters, it is drawn in the
-  series colour and everything else recedes to grey - rather than giving every
-  series its own hue and asking the reader to decode a legend.
-- **Selective labels.** Direct-label the points that carry the argument, not
-  every point.
+- The book's look. Every figure uses the style of Forecasting: Principles and
+  Practice (the Pythonic edition's figures follow ggplot2's default theme). A
+  light grey panel with white gridlines, no axis spines, black actuals, and
+  the Okabe-Ito palette the book uses. The report's figures then read as
+  continuations of the reference.
+- Legends sit below the axes. Every legend is placed by `legend_below` and
+  nothing is drawn inside the plotting area.
+- One hue per single-series chart. Colour carries identity and never
+  magnitude.
+- Emphasis over enumeration. Where one series matters it is drawn in the
+  series colour and everything else goes grey.
+- Selective labels. Direct-label the points that carry the argument.
 
 Layout is matplotlib's constrained layout, switched on in `use_style`, which
 makes room for legends placed outside the axes. Do not call `tight_layout()`
-on these figures - it replaces the engine and the legends end up clipped.
+on these figures. It replaces the layout engine and the legends get clipped.
 """
 
 from __future__ import annotations
@@ -40,7 +36,7 @@ import pandas as pd
 from src.step3_explore import ADI_CUT, CV2_CUT
 
 # --- palette ---------------------------------------------------------------
-# Sampled from the book's own figures (otexts.com/fpppy): the panel is
+# Sampled from the book's own figures (otexts.com/fpppy). The panel is
 # rgb(229,229,229), the grid is white, text is black, ticks are mid grey.
 SURFACE = "#ffffff"  # figure background
 PANEL = "#e5e5e5"  # plotting area
@@ -50,7 +46,8 @@ INK_MUTED = "#7f7f7f"
 GRID = "#ffffff"
 AXIS = "#7f7f7f"  # reference lines (zero, cut points, the holdout boundary)
 
-# Okabe-Ito, as the book uses it. The first three carry the three models.
+# Okabe-Ito, as the book uses it. The first three carry the three models;
+# the registry figures use 4 and 5 for the pooled and level-relative variants.
 SERIES_1 = "#0072B2"  # blue
 SERIES_2 = "#D55E00"  # vermillion
 SERIES_3 = "#009E73"  # green
@@ -61,7 +58,7 @@ DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def use_style() -> None:
-    """Apply the book's chart chrome. Call once at the top of a notebook."""
+    """Apply the book's chart look. Call once at the top of a notebook."""
     plt.rcParams.update(
         {
             "figure.facecolor": SURFACE,
@@ -71,7 +68,7 @@ def use_style() -> None:
             "axes.labelcolor": INK_SOFT,
             "axes.titlecolor": INK,
             "axes.titlesize": 10,
-            "axes.titleweight": "normal",  # DejaVu Sans has no medium weight
+            "axes.titleweight": "normal",  # dejaVu Sans has no medium weight
             "axes.labelsize": 9,
             "axes.grid": True,
             "axes.axisbelow": True,  # chrome behind the data, never over it
@@ -96,25 +93,24 @@ def use_style() -> None:
     )
 
 
-# Figures already handed to `show`, so a later call does not re-display them.
-# Tracked by identity rather than figure number - numbers are reused once a
-# figure is closed.
+# Figures already handed to `show`, so a later call does not display them
+# again. Tracked by identity because figure numbers get reused once a figure
+# is closed.
 _shown: set[int] = set()
 
 
 def show() -> None:
     """
-    Show every figure created since the last call - inline *and* in a window.
+    Show every figure created since the last call, inline and in a window.
 
-    In a notebook session with a GUI backend (`%matplotlib tk`), the window
-    opens as usual, and a PNG of the figure is also sent to the notebook's
-    output, so the Interactive Window keeps a scrollable record while the
-    window is there for zooming and hovering. With the inline backend it is
-    plain `plt.show()`, one image per figure. In a plain script run it is a
-    no-op beyond `plt.show()`, which under Agg does nothing.
+    With a GUI backend (`%matplotlib tk`) the window opens as usual and a PNG
+    of the figure also goes to the notebook output, so the Interactive Window
+    keeps a scrollable record while the window is there for zooming and
+    hovering. With the inline backend this is plain `plt.show()`. In a script
+    run under Agg it does nothing visible.
 
-    Every plotting cell in the notebooks ends with this call, and nothing
-    else, so no figure is ever displayed twice.
+    Every plotting cell in the notebooks ends with this call and nothing else,
+    which is what keeps a figure from showing twice.
     """
     import matplotlib
 
@@ -139,7 +135,7 @@ def show() -> None:
             _shown.add(id(fig))
     with warnings.catch_warnings():
         # Under a non-GUI backend (a script run on Agg) there is no window to
-        # open, and matplotlib says so; that is expected, not a problem.
+        # open and matplotlib warns about it. Expected.
         warnings.simplefilter("ignore", UserWarning)
         plt.show(block=False)
 
@@ -147,8 +143,8 @@ def show() -> None:
 def merge_legends(fig: plt.Figure, ncols: int | None = None):
     """
     Replace the per-axes legends of a multi-panel figure with one figure
-    legend below all panels, one entry per distinct label. For panels that
-    share their series, two legends side by side would collide.
+    legend below all panels, one entry per distinct label. Panels that share
+    their series would otherwise get two legends side by side.
     """
     for ax in fig.axes:
         if ax.get_legend() is not None:
@@ -161,10 +157,10 @@ def legend_below(target, ncols: int | None = None, handles=None, labels=None):
     Place the one legend for an Axes or a Figure below the plotting area.
 
     This is the only legend call in the module. On an Axes it hangs under the
-    x-axis (below the tick labels and any x-label); on a Figure it sits under
-    every panel, gathering one entry per distinct label across the panels.
-    Constrained layout, switched on in `use_style`, makes room for it. Returns
-    the legend, or None when there is nothing to label.
+    x-axis, below the tick labels and any x-label. On a Figure it sits under
+    every panel with one entry per distinct label. Constrained layout,
+    switched on in `use_style`, makes room for it. Returns the legend, or None
+    when there is nothing to label.
     """
     if handles is None:
         axes = (
@@ -181,9 +177,9 @@ def legend_below(target, ncols: int | None = None, handles=None, labels=None):
         return None
     ncols = ncols or min(len(labels), 6)
     if hasattr(target, "plot"):  # an Axes
-        # A fixed distance in points below the axes - enough to clear the tick
-        # labels, and the x-label when there is one - rather than a fraction of
-        # the axes height, which would put the legend far away on a tall panel.
+        # A fixed distance in points below the axes, enough to clear the tick
+        # labels and the x-label when there is one. A fraction of the axes
+        # height would put the legend far away on a tall panel.
         from matplotlib.transforms import offset_copy
 
         drop = 34 if target.get_xlabel() else 20
@@ -222,15 +218,11 @@ def plot_series(
     """
     Daily sales for one series, with a rolling mean over the top.
 
-    The grey is **not** a shaded band or a confidence interval - it is the
-    actual daily sales line. At ~1,900 daily points squeezed into one panel the
-    line zig-zags faster than the eye can follow, so it reads as a grey cloud.
-    That is useful rather than accidental: the *vertical thickness* of the grey
-    at any date is how much day-to-day variation there was around then.
-
-    The blue line on top is the rolling average, and it is what the eye should
-    follow for level and trend - smoothed enough to be readable, not so smoothed
-    that a real level shift disappears.
+    The grey is the actual daily sales line. About 1,900 daily points in one
+    panel zig-zag faster than the eye can follow, so it reads as a grey cloud,
+    and the vertical thickness of the cloud at any date is how much day-to-day
+    variation there was. The blue line is the rolling average, the thing to
+    follow for level and trend.
     """
     ax = ax or plt.gca()
     g = _series(df, series_id)
@@ -293,15 +285,14 @@ def plot_store_grid(
     """
     One product, every store, as small multiples ordered by volume.
 
-    This is the central exhibit of the study: the product is held constant, so
-    anything that differs between panels is a property of the store's demand,
-    not of the item. Each panel is titled with its measured demand class.
+    The central exhibit of the study. The product is held constant, so
+    anything that differs between panels is a property of the store's demand.
+    Each panel is titled with its measured demand class.
 
-    Y-axes are deliberately *not* shared. Store volumes differ by an order of
-    magnitude, and a shared axis would flatten the small stores into a
-    featureless line - hiding exactly the series whose behaviour is in question.
-    The cost is that panel heights are not comparable, which is why the mean is
-    printed in each title.
+    The y-axes are not shared. Store volumes differ by an order of magnitude
+    and a shared axis would flatten the small stores into a featureless line.
+    Panel heights are then not comparable, which is why the mean is printed in
+    each title.
     """
     s = stats[stats["item_id"] == item_id].sort_values("mean_sales", ascending=False)
     nrows = int(np.ceil(len(s) / ncols))
@@ -342,11 +333,10 @@ def plot_seasonality(
     df: pd.DataFrame, series_id: str, axes: np.ndarray | None = None
 ) -> np.ndarray:
     """
-    Weekday and month profiles for one series.
+    Weekday and month profiles for one series, in two panels.
 
-    Two separate panels rather than one chart with two scales. Weekday
-    seasonality is what a 7-day forecast lives or dies on; the month panel says
-    whether an annual pattern exists worth giving the model a feature for.
+    Weekday seasonality is what a 7-day forecast lives or dies on. The month
+    panel says whether an annual pattern exists that is worth a feature.
     """
     if axes is None:
         _, axes = plt.subplots(1, 2, figsize=(9, 2.8))
@@ -377,14 +367,13 @@ def plot_seasonality_by_store(
 
     Each store's profile is divided by that store's own mean, so a 100-unit
     store and a 15-unit store both read as "how far above or below my usual
-    level is this weekday / month". Without that step the busiest store would
-    set the shape and the small ones would be invisible along the bottom.
+    level is this weekday or month". Without that step the busiest store sets
+    the shape and the small ones sit invisible along the bottom.
 
-    Thin grey lines are the individual stores; the bold blue line is their
-    average. If the grey lines bunch tightly around the blue, the seasonal
-    shape is a property of the *product* and one feature serves every store.
-    If they fan out, seasonality differs by store and a pooled model needs
-    store identity to capture it.
+    Thin grey lines are the stores and the bold blue line is their average.
+    Grey lines bunched around the blue mean the seasonal shape belongs to the
+    product and one feature serves every store. Grey lines that fan out mean
+    seasonality differs by store and a pooled model needs store identity.
     """
     if axes is None:
         _, axes = plt.subplots(1, 2, figsize=(9.5, 2.9))
@@ -429,8 +418,8 @@ def plot_seasonality_by_store(
         hover_labels(store_lines)
 
     axes[0].set_ylabel("× the store's own mean")
-    # Only the mean line goes in the legend - the store lines are labelled for
-    # the hover tooltip, not for a ten-entry legend box.
+    # Only the mean line goes in the legend. The store lines are labelled for
+    # the hover tooltip, a ten-entry legend box would be useless.
     legend_below(axes[0], handles=[mean_line], labels=[mean_line.get_label()])
     return axes
 
@@ -439,9 +428,9 @@ def hover_labels(artists) -> None:
     """
     Show an artist's label as a tooltip when the mouse hovers over it.
 
-    Works in an interactive window - the Tk pop-out the notebook can open - and
-    is a silent no-op for inline or PNG output, where there is no mouse. Also a
-    no-op if `mplcursors` is not installed, so nothing here can break a plot.
+    Works in the Tk pop-out window the notebook can open. Does nothing for
+    inline or PNG output, where there is no mouse, and nothing when
+    `mplcursors` is not installed.
     """
     try:
         import mplcursors
@@ -467,20 +456,18 @@ def plot_demand_class_map(
     item_id: str | None = None,
 ) -> plt.Axes:
     """
-    Every series placed by how *often* it sells (ADI) and how *consistently*
+    Every series placed by how often it sells (ADI) and how consistently
     (CV²), with the conventional cut points drawn in.
 
-    Colour deliberately does not encode the class: the class *is* the quadrant,
-    so position already carries it and a second encoding would be redundant.
-    Instead colour carries emphasis - the highlighted item is solid and
-    labelled, everything else recedes.
+    Colour does not encode the class. The class is the quadrant, so position
+    already carries it. Colour carries emphasis instead, the highlighted item
+    is solid and labelled and everything else goes grey.
 
-    Showing the cloud rather than four buckets is the point. The cut points at
-    1.32 and 0.49 are conventions, and a series sitting just either side of a
-    line is not meaningfully different from its neighbour. The scatter makes
-    that visible in a way a count-by-class table cannot.
+    The cut points at 1.32 and 0.49 are conventions, and a series just either
+    side of a line is no different from its neighbour. The scatter shows that
+    in a way a count-by-class table cannot.
 
-    `item_id` restricts the plot to one item; `highlight_item` emphasises one
+    `item_id` restricts the plot to one item. `highlight_item` emphasises one
     item among several. With a single-item study set they are the same thing.
     """
     ax = ax or plt.gca()
@@ -513,12 +500,12 @@ def plot_demand_class_map(
         zorder=3,
     )
     # Labels are stacked with a minimum vertical gap and joined to their point
-    # by a hairline, so stores that sit on top of each other (a smooth item's
-    # stores all do) stay readable. Alternate sides halve the stacking.
+    # by a hairline, so stores that sit on top of each other stay readable. A
+    # smooth item's stores all do. Alternating sides halves the stacking.
     ordered = focus.sort_values("cv2")
     if len(ordered):
-        # In CV² units: the axis always spans at least the 0.49 cut, so a
-        # fixed gap reads the same on every item.
+        # In CV² units. The axis always spans at least the 0.49 cut, so a fixed
+        # gap reads the same on every item.
         gap = 0.022
         last = {True: -np.inf, False: -np.inf}
         for i, (_, r) in enumerate(ordered.iterrows()):
@@ -542,16 +529,16 @@ def plot_demand_class_map(
     ax.axvline(ADI_CUT, color=AXIS, lw=1.0, zorder=1)
     ax.axhline(CV2_CUT, color=AXIS, lw=1.0, zorder=1)
 
-    # Room below and left of the cloud, so the corner labels have somewhere to
+    # Room below and left of the cloud so the corner labels have somewhere to
     # sit that is not on a data point. A smooth item's stores all crowd the
-    # bottom-left corner - which is where "smooth" has to be written.
+    # bottom-left corner, which is where "smooth" has to be written.
     x0, x1 = ax.get_xlim()
     y0, y1 = ax.get_ylim()
     ax.set_xlim(x0 - 0.04 * (x1 - x0), x1)
     ax.set_ylim(min(0.0, y0) - 0.06 * (y1 - y0), y1)
 
-    # Quadrant names sit in the corners, in muted ink - they label regions of
-    # the plot, not data points.
+    # Quadrant names sit in the corners in muted ink. They label regions of the
+    # plot.
     x0, x1 = ax.get_xlim()
     y0, y1 = ax.get_ylim()
     px, py = 0.01 * (x1 - x0), 0.02 * (y1 - y0)
@@ -581,11 +568,10 @@ def plot_snap_effect(
     df: pd.DataFrame, item_id: str, stats: pd.DataFrame, ax: plt.Axes | None = None
 ) -> plt.Axes:
     """
-    Mean daily sales on SNAP benefit days versus other days, by store.
+    Mean daily sales on SNAP benefit days against other days, by store.
 
-    Two series, so a legend is present. SNAP dates are known years ahead, which
-    makes any effect here free forecasting signal - the model can use it without
-    predicting anything.
+    SNAP dates are known years ahead, so any effect here is free forecasting
+    signal. The model can use it without predicting anything.
     """
     ax = ax or plt.gca()
     order = stats[stats["item_id"] == item_id].sort_values("mean_sales", ascending=False)[
@@ -604,10 +590,10 @@ def plot_snap_effect(
     ax.bar(x - 0.19, means[0], width=0.36, color=SERIES_1, label="ordinary day")
     ax.bar(x + 0.19, means[1], width=0.36, color=SERIES_2, label="SNAP day")
 
-    # The number that matters is the *lift*, not either bar's height - so one
-    # callout per store, sitting inside the top of the SNAP bar on a light pill
-    # so it reads against the orange. Small differences between neighbouring
-    # bars are hard to judge by eye; a printed +6.5% is not.
+    # The number to read is the lift. One callout per store, inside the top of
+    # the SNAP bar on a light pill so it reads against the orange. Small
+    # differences between neighbouring bars are hard to judge by eye and a
+    # printed +6.5% is not.
     lift = (means[1] / means[0] - 1) * 100
     for xi, (top, pct) in enumerate(zip(means[1], lift, strict=True)):
         if np.isnan(top) or np.isnan(pct):
@@ -642,15 +628,14 @@ def _outliers(sales: pd.Series, roll: int = 28, k: float = 4.0) -> pd.Series:
     """
     Points far from the local level, by a robust control-limit rule.
 
-    Residual from a centred rolling *median*, scaled by the median absolute
-    deviation (x1.4826, which puts MAD on the same footing as a standard
+    Residual from a centred rolling median, scaled by the median absolute
+    deviation (times 1.4826, which puts MAD on the same footing as a standard
     deviation for normal data). Anything beyond k robust sigma is flagged.
 
-    Median and MAD are used rather than mean and standard deviation for the
-    usual control-chart reason: a couple of large spikes drag the mean and
-    inflate the standard deviation, so the outliers end up concealing
-    themselves. k=4 is deliberately loose - this marks points worth *asking
-    about*, not defects.
+    Median and MAD instead of mean and standard deviation for the usual
+    control-chart reason. A couple of large spikes drag the mean and inflate
+    the standard deviation, and the outliers end up hiding themselves. k=4 is
+    loose on purpose, this marks points worth asking about.
     """
     level = sales.rolling(roll, center=True, min_periods=roll // 2).median()
     resid = sales - level
@@ -663,7 +648,7 @@ def sample_acf(y: np.ndarray, nlags: int) -> np.ndarray:
     Sample autocorrelation r_k for k = 0..nlags, as defined in FPP §2.8.
 
     r_k measures how strongly a day resembles the day k days earlier. Written
-    out rather than imported so there is nothing here to take on trust:
+    out so there is nothing here to take on trust:
 
         r_k = sum_t (y_t - ybar)(y_{t-k} - ybar) / sum_t (y_t - ybar)^2
     """
@@ -681,15 +666,14 @@ def plot_acf(
     title: str | None = None,
 ) -> plt.Axes:
     """
-    Autocorrelation of daily sales - the evidence behind the lag features.
+    Autocorrelation of daily sales, the evidence behind the lag features.
 
-    This is the plot that decides which lags are worth giving a model. Spikes at
-    7, 14, 21, 28 mean the weekly cycle is the dominant structure; a slow decay
-    from lag 1 means the recent level matters in its own right. Picking lags
-    without looking at this is picking by convention rather than by evidence.
+    This plot decides which lags are worth giving a model. Spikes at 7, 14,
+    21, 28 mean the weekly cycle is the dominant structure. A slow decay from
+    lag 1 means the recent level matters in its own right.
 
-    The grey band is the +/- 1.96/sqrt(T) white-noise interval (FPP §2.9): bars
-    inside it are not distinguishable from random.
+    The grey band is the +/- 1.96/sqrt(T) white-noise interval (FPP §2.9).
+    Bars inside it are not distinguishable from random.
     """
     ax = ax or plt.gca()
     y = _series(df, series_id)["sales"].to_numpy(dtype=float)
@@ -725,14 +709,13 @@ def plot_year_overlay(
     """
     Each calendar year drawn on a shared day-of-year axis (FPP §2.4).
 
-    Answers "are there business cycles, or an annual pattern?". If the years
-    trace the same shape, that shape is seasonal and worth a feature. If they
-    wander independently, what looked like seasonality in a single time plot was
+    Answers whether there is an annual pattern. Years that trace the same
+    shape mean the shape is seasonal and worth a feature. Years that wander
+    independently mean what looked like seasonality in a single time plot was
     drift, and a month feature would fit noise.
 
-    There are more years than the three hues a scatter can safely carry, so this
-    uses emphasis rather than enumeration: the most recent year is solid blue,
-    earlier years recede to grey. The legend carries identity.
+    More years than hues, so the most recent year is solid blue and earlier
+    years go grey. The legend carries identity.
     """
     ax = ax or plt.gca()
     g = _series(df, series_id).copy()
@@ -765,12 +748,10 @@ def plot_price_relationship(
     """
     Sales against shelf price, one point per store-week (FPP §2.7 scatterplot).
 
-    Price is known in advance in this dataset, so any relationship visible here
-    is signal a forecast can legitimately use.
-
-    Aggregated to weekly because price only changes weekly - plotting daily
-    points would stack seven identical x-values on every price and make the
-    cloud look far denser than the evidence behind it.
+    Price is known in advance in this dataset, so any relationship here is
+    signal a forecast can use. Aggregated to weekly because price only changes
+    weekly. Daily points would stack seven identical x-values on every price
+    and make the cloud look far denser than the evidence behind it.
     """
     ax = ax or plt.gca()
     g = df[df["item_id"] == item_id]
@@ -783,9 +764,9 @@ def plot_price_relationship(
     ax.scatter(
         wk["price"], wk["sales"], s=14, color=SERIES_1, alpha=0.35, edgecolors="none"
     )
-    # When every point stacks into a few columns, the columns *are* the
-    # finding: label each with the dates that price was in force, so the
-    # reader sees a clock rather than a relationship.
+    # When every point stacks into a few columns, the columns are the finding.
+    # Label each with the dates that price was in force, so the reader sees a
+    # clock rather than a relationship.
     spans = (
         g.dropna(subset=["sell_price"])
         .groupby("sell_price", observed=True)["date"]
@@ -822,19 +803,19 @@ def plot_event_effects(
     threshold: float = 0.15,
 ) -> plt.Axes:
     """
-    Every calendar event's effect on sales - the evidence behind the holiday
-    set - from `step3_explore.event_effects`.
+    Every calendar event's effect on sales, from `step3_explore.event_effects`.
+    The evidence behind the holiday feature set.
 
-    Two markers per event: the event day itself, and the larger of the two
+    Two markers per event, the event day itself and the larger of the two
     days before it (the run-up). Both are ratios to a same-weekday baseline,
-    so 1.0 is "an ordinary day" and 1.7 is "70% above". Events in `major`
-    are drawn in colour; the rest recede to grey. The dotted lines mark the
-    threshold an event had to clear, in either direction, to be counted.
+    so 1.0 is an ordinary day and 1.7 is 70% above. Events in `major` are
+    drawn in colour and the rest go grey. The dotted lines mark the threshold
+    an event had to clear, in either direction, to be counted.
 
-    A closure day (Christmas) has no day marker: the stores were shut, so there
-    is no demand to measure and the loader has imputed the value. Its run-up
-    is still drawn, and it is the largest in the calendar - which is exactly
-    why an on/off flag is not enough.
+    A closure day (Christmas) has no day marker. The stores were shut, so
+    there is no demand to measure and the loader imputed the value. Its
+    run-up is still drawn, and it is the largest in the calendar, which is why
+    an on/off flag alone is not enough.
     """
     ax = ax or plt.gca()
     t = table.reset_index().sort_values("max_deviation")
@@ -856,8 +837,8 @@ def plot_event_effects(
             alpha=alpha,
             zorder=3,
         )
-    # A legend needs handles of its own - the coloured points above carry no
-    # label because colour means "selected", not a series.
+    # A legend needs handles of its own. The coloured points above carry no
+    # label because colour means "selected" here rather than a series.
     ax.scatter([], [], s=34, color=INK_SOFT, label="the day itself")
     ax.scatter(
         [],
@@ -887,13 +868,14 @@ def plot_zero_rate(
     stats: pd.DataFrame, item_id: str | None = None, ax: plt.Axes | None = None
 ) -> plt.Axes:
     """
-    Share of days with no sale, per series - the sparsity of the working set.
+    Share of days with no sale, per series. The sparsity of the working set.
 
-    One bar per store, ordered by volume. On a fast mover these should all sit
-    near zero; a store standing out is one to look at before it reaches a model.
+    One bar per store, ordered by volume. On a fast mover these all sit near
+    zero. A store standing out is one to look at before it reaches a model.
 
-    Pass `item_id` whenever `stats` holds more than one item, or the bars of
-    different products land on one axis with nothing to tell them apart.
+    Pass `item_id` whenever `stats` holds more than one item, otherwise the
+    bars of different products land on one axis with nothing to tell them
+    apart.
     """
     ax = ax or plt.gca()
     if item_id is not None:
@@ -912,10 +894,10 @@ def plot_zero_rate(
 # Step 5: evaluating the forecasts (FPP §5.4, §5.8, §5.10)
 # --------------------------------------------------------------------------- #
 
-# Models carry a hue; benchmarks recede to grey. Nine methods is past the
-# hues a chart can carry safely, and the story is "the models against the
-# pack", so that is what the colour says. Benchmarks are told apart by line
-# style and marker instead, so the legend still identifies each one.
+# Models carry a hue and benchmarks go grey. Nine methods is past the hues a
+# chart can carry, and the story is the models against the pack, so that is
+# what the colour says. Benchmarks are told apart by line style and marker
+# instead, so the legend still identifies each one.
 MODEL_COLOURS = {"xgboost": SERIES_1, "ets": SERIES_2, "arima": SERIES_3}
 BENCH_LINES = {
     "seasonal_naive": "--",
@@ -934,7 +916,7 @@ BENCH_MARKERS = {
     "drift": "+",
 }
 
-# The subset drawn by default where nine lines would be a tangle: the three
+# The subset drawn by default where nine lines would be a tangle. The three
 # models plus the two benchmarks that actually compete.
 DEFAULT_METHODS = ("xgboost", "ets", "arima", "moving_average_28", "seasonal_naive")
 
@@ -948,7 +930,7 @@ def _method_style(name: str, kind: str) -> dict:
 
 
 def _drop_closures(predictions: pd.DataFrame) -> pd.DataFrame:
-    """Closure days are imputed, not observed - they are never scored or drawn as residuals."""
+    """Closure days are imputed rather than observed, so they are never scored or drawn as residuals."""
     if "closure" in predictions:
         return predictions[~predictions["closure"].astype(bool)]
     return predictions
@@ -974,30 +956,21 @@ def plot_forecast_folds(
 ) -> plt.Axes:
     """
     Each method's forecasts drawn over the actual sales, across every fold.
+    FPP §5.8's figure, competing forecasts on the same axes as what happened.
 
-    `window` = (start, end) restricts the drawing to a span of dates. A full
-    year of daily forecasts is too dense to read; eight weeks around the
-    holidays is where the methods actually separate.
-
-    `horizon` picks which forecast to draw for each day when folds overlap
-    (a fold step shorter than the window gives every day one forecast per
-    horizon). None means: all of them when folds tile, and h = 1 when they
-    overlap - the one-day-ahead line, which is the forecast an order placed
-    the day before would have used.
-
-    This is FPP §5.8's figure - competing forecasts on the same axes as what
-    happened, with the test period visible. The book's own verdict on its
-    example is "it is obvious from the graph", and that is the standard: if a
-    method is better, this plot should show it before any table does.
-
-    Because the folds tile the held-out window end to end, each method's
-    seven-day forecasts join into one continuous line. The faint vertical
-    lines are the fold origins - every seventh day the forecaster was re-run
-    from a fresh standing point, so a kink there is the origin moving, not a
-    property of the method.
-
-    `lead_in` days of history are drawn before the held-out window so the eye
-    has the recent level for context.
+    - `window` = (start, end) restricts the drawing to a span of dates. A
+      full year of daily forecasts is too dense to read. Eight weeks around
+      the holidays is where the methods separate.
+    - `horizon` picks which forecast to draw for each day when folds overlap
+      (a fold step shorter than the window gives every day one forecast per
+      horizon). None means all of them when folds tile, and h = 1 when they
+      overlap, the one-day-ahead line an order placed the day before would
+      have used.
+    - When the folds tile the held-out window end to end, each method's
+      seven-day forecasts join into one line. The faint vertical lines are the
+      fold origins. A kink there is the origin moving.
+    - `lead_in` days of history are drawn before the held-out window so the
+      eye has the recent level for context.
     """
     ax = ax or plt.gca()
     p = predictions[predictions["id"] == series_id]
@@ -1047,7 +1020,7 @@ def plot_forecast_folds(
 
 
 def _folds_overlap(predictions: pd.DataFrame) -> bool:
-    """True when some day carries more than one forecast per method (fold step < window)."""
+    """True when some day carries more than one forecast per method, i.e. the fold step is shorter than the window."""
     if predictions.empty:
         return False
     one = predictions[predictions["method"] == predictions["method"].iloc[0]]
@@ -1056,8 +1029,8 @@ def _folds_overlap(predictions: pd.DataFrame) -> bool:
 
 def _date_axis(ax: plt.Axes, start: pd.Timestamp, end: pd.Timestamp) -> None:
     """
-    Tick a date axis at a density the panel can carry: weeks, months, or years,
-    thinned so that roughly one tick per inch of panel width remains.
+    Tick a date axis at a density the panel can carry (weeks, months or years),
+    thinned to roughly one tick per inch of panel width.
     """
     days = (end - start).days
     width_in = ax.get_position().width * ax.figure.get_figwidth()
@@ -1087,19 +1060,15 @@ def plot_rmsse_by_horizon(
     figure 5.24).
 
     Each point is the RMSSE over every series-fold for forecasts made h days
-    from the origin. Error should rise with h - a day-ahead forecast knows
-    more than a week-ahead one - and *how steeply* it rises is the thing to
-    read: a flat line means the method is not using the recent past at all
-    (a mean does this), a steep one means its advantage is mostly at short
-    horizons.
+    from the origin. Error should rise with h, a day-ahead forecast knows more
+    than a week-ahead one, and how steeply it rises is the thing to read. A
+    flat line means the method is not using the recent past at all (a mean
+    does this). A steep one means its advantage is mostly at short horizons.
 
-    **Caveat - horizon is confounded with weekday.** When fold origins step
-    by exactly the season length (7 days), every origin lands on the same
-    weekday, so h=1 is always the same day of the week and h=7 always
-    another. This plot then mixes "how far ahead" with "which weekday", and
-    the high-volume weekend day inflates h=7 for every method. Read it with
-    that in mind, or step origins by a number coprime to 7. See
-    OPEN_QUESTIONS.md.
+    On the weekly layout horizon is confounded with weekday. Origins step by
+    exactly seven days, so h=1 is always the same weekday and h=7 always
+    another, and the busy weekend day inflates h=7 for every method. The
+    every-day layout (item 2) removes this and is the reported one.
     """
     ax = ax or plt.gca()
     predictions = _drop_closures(predictions)
@@ -1140,11 +1109,10 @@ def plot_rmsse_by_store(
     """
     Mean RMSSE per store, one marker per method, busiest store first.
 
-    Not one of FPP's figures - it is the view this study was designed around.
-    The question is whether a method's advantage depends on the store, and
-    the volume gradient across the ten stores is where that shows: read left
-    to right and watch whether the coloured markers pull away from the grey
-    pack, or sink back into it.
+    Not one of FPP's figures. It is the view this study was designed around,
+    whether a method's advantage depends on the store. Read left to right
+    down the volume gradient and watch whether the coloured markers pull away
+    from the grey pack or sink back into it.
     """
     ax = ax or plt.gca()
     if item_id is not None:
@@ -1195,8 +1163,8 @@ def plot_bias_by_store(
     """
     Mean bias (forecast minus actual, units per day) per store, one marker per
     model, busiest store first. Zero is the line to sit on. A method whose
-    markers sit on one side of it at most stores has a systematic
-    over- or under-forecast that a symmetric error score will not show.
+    markers sit on one side of it at most stores has a systematic over- or
+    under-forecast that a symmetric error score does not show.
     """
     ax = ax or plt.gca()
     if item_id is not None:
@@ -1240,40 +1208,36 @@ def plot_residual_diagnostics(
     """
     FPP §5.4's three residual panels for one method on one series.
 
-    The book says a good method's residuals should be (essential) uncorrelated
-    and centred on zero, and (useful) of constant variance and roughly normal.
-    One panel per question:
+    The book says a good method's residuals are uncorrelated and centred on
+    zero, and ideally of constant variance and roughly normal. One panel per
+    question:
 
       time plot  - is the mean zero, and is the spread constant over time?
       ACF        - is anything left that the method should have captured?
       histogram  - is the spread roughly symmetric and bell-shaped?
 
     Residuals here are `forecast - actual`, the same convention as the `bias`
-    column in the tables (positive = over-forecast). FPP writes them the other
-    way round; every diagnostic is identical under a sign flip except the sign
-    of the mean, which is stated in the title.
+    column in the tables (positive = over-forecast). FPP writes them the
+    other way round. Every diagnostic is identical under a sign flip except
+    the sign of the mean, which is stated in the title.
 
-    The Ljung-Box p-value tests the ACF panel formally, at the lag FPP
-    prescribes for seasonal data (2m, capped at T/5). Above 0.05 means the
-    residuals are indistinguishable from white noise - the method has taken
-    everything predictable.
+    The Ljung-Box p-value tests the ACF panel at the lag FPP prescribes for
+    seasonal data (2m, capped at T/5). Above 0.05 means the residuals look
+    like white noise and the method has taken everything predictable.
 
-    **Read the ACF with one thing in mind.** FPP's residual tests are stated
-    for one-step-ahead residuals. These are 1- to 7-step-ahead errors, and
-    all seven days of a fold share one origin, so an error in the level at the
-    origin runs through the whole week. Multi-step errors are therefore
-    correlated out to lag h-1 *even for a perfect model* - a small
-    autocorrelation at lags 1-6 is the design, not a defect. What would be a
-    defect is a spike at lag 7 or beyond (a weekly pattern the method missed)
-    or a mean far from zero (bias).
+    FPP's residual tests are stated for one-step-ahead residuals. With
+    overlapping folds (the every-day layout) the one-step residuals are used
+    and the verdict is a real one. On the weekly layout these are 1- to
+    7-step-ahead errors that share one origin, so a small autocorrelation at
+    lags 1-6 is the design. A spike at lag 7 or beyond, or a mean far from
+    zero, is what would count against a method there.
     """
     if axes is None:
         _, axes = plt.subplots(1, 3, figsize=(13, 3.2))
     predictions = _drop_closures(predictions)
     p = predictions[(predictions["id"] == series_id) & (predictions["method"] == method)]
     # With overlapping folds every day has one residual per horizon. Use the
-    # one-step-ahead residuals: that is what FPP's diagnostics are stated for,
-    # and then the Ljung-Box verdict is a real one.
+    # one-step-ahead residuals, which is what FPP's diagnostics are stated for.
     one_step = _folds_overlap(p)
     if one_step:
         p = p[p["horizon"] == 1]
@@ -1330,11 +1294,11 @@ def plot_pinball_by_tau(
     """
     Relative pinball loss against the service level τ, one line per method.
 
-    The question this answers is whether the *ranking* changes with the cost
-    asymmetry. Lines that cross mean it does: the best method for a
-    perishable (τ below 0.5) is not the best for an ambient item (τ near
-    0.9). Lower is better everywhere; values at different τ are on different
-    scales and must not be averaged along a line.
+    Answers whether the ranking changes with the cost asymmetry. Lines that
+    cross mean it does, the best method for a perishable (τ below 0.5) is a
+    different one from the best for an ambient item (τ near 0.9). Lower is
+    better everywhere. Values at different τ are on different scales and are
+    never averaged along a line.
     """
     ax = ax or plt.gca()
     methods = _present(summary, methods)
@@ -1363,7 +1327,7 @@ def plot_coverage_by_tau(
 ) -> plt.Axes:
     """
     Achieved coverage against the target τ. A perfectly calibrated method
-    sits on the diagonal: its 0.9-quantile order covers 90% of weeks. Above
+    sits on the diagonal, its 0.9-quantile order covers 90% of weeks. Above
     the line is over-ordering, below is stockouts more often than promised.
     The gap is how well one year's error distribution described the next.
     """
@@ -1406,11 +1370,11 @@ def plot_weekly_order_band(
     ax: plt.Axes | None = None,
 ) -> plt.Axes:
     """
-    One store, one method: each scored week's actual total against the
+    One store, one method. Each scored week's actual total against the
     order-up-to levels at several service levels.
 
     The black line is what the store sold each week. The coloured bands are
-    the quantile forecasts: the τ = 0.5 line is the median forecast, the
+    the quantile forecasts. The τ = 0.5 line is the median forecast, the
     upper edge is τ = 0.9 (what a 90% service level would order) and the
     lower edge τ = 0.3 (what a perishable's economics would order). Weeks
     where black rises above a band's top edge are the stockouts that service

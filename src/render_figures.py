@@ -4,10 +4,15 @@ notebook.
 
     python -m src.render_figures
 
-The notebooks are where the figures are *read*; this is where they are
-*regenerated* on demand - after a change to `plots.py`, or to look at them all
-side by side. One folder per notebook, numbered in the order the notebook
-draws them. `figures/` is gitignored: the report embeds its own copies.
+The notebooks are where the figures are read. This is where they get
+regenerated after a change to `plots.py`, or to look at them all side by
+side. One folder per notebook, numbered in the order the notebook draws them.
+`figures/` is gitignored and the report embeds its own copies.
+
+Careful with the bare module run. `render_order` needs the two-year (104
+fold) run, and any method without a cached run on that layout gets fitted
+from scratch. Call `render_all()` and `render_evaluation()` on their own when
+that is all you need.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ import warnings
 
 import matplotlib
 
-matplotlib.use("Agg")  # file output only; never opens a window
+matplotlib.use("Agg")  # file output only, never opens a window
 
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -36,7 +41,7 @@ EXPLORE, EVALUATE, ORDER = OUT / "01_explore", OUT / "02_evaluate", OUT / "03_or
 
 
 def render_all(cfg: Config | None = None) -> list[str]:
-    """Render the full set. Returns the filenames written."""
+    """Render the exploration figures (notebook 01). Returns the filenames written."""
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
     EXPLORE.mkdir(parents=True, exist_ok=True)
     plots.use_style()
@@ -90,7 +95,9 @@ def render_all(cfg: Config | None = None) -> list[str]:
     plots.plot_zero_rate(stats, item_id=item, ax=axes[1])
     save(fig, "5_relationships.png")
 
-    # 5b. which calendar events move this item - the evidence for MAJOR_EVENTS
+    # 5b. which calendar events move this item, the evidence for MAJOR_EVENTS.
+    #     Measured before the classification cutoff so the choice of holiday
+    #     features never sees the scored year.
     calendar = pd.read_csv(cfg.data_dir / "calendar.csv", parse_dates=["date"])
     fig, ax = plt.subplots(figsize=(7.5, 6.2))
     plots.plot_event_effects(event_effects(df, calendar, cutoff), major=MAJOR_EVENTS, ax=ax)
@@ -106,8 +113,9 @@ def render_all(cfg: Config | None = None) -> list[str]:
 
 def render_evaluation(cfg: Config | None = None) -> list[str]:
     """
-    The step-5 figures. Runs the walk-forward (about a minute once the
-    feature matrices are cached) and draws FPP's evaluation plots from it.
+    The evaluation figures (notebook 02). Loads the cached walk-forward and
+    draws FPP's evaluation plots from it. With every method cached this takes
+    about a minute.
     """
     from src.step5_evaluate import run_walk_forward, score_folds
 
@@ -164,12 +172,12 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
         fig.suptitle(f"{model} at {top_store} — residual diagnostics", fontsize=11)
         save(fig, f"3_residuals_{model}.png")
 
-    # 4. RMSSE by store - the study's own view
+    # 4. RMSSE by store, the study's own view
     fig, ax = plt.subplots(figsize=(10, 3.8))
     plots.plot_rmsse_by_store(scores, stats, item_id=item, ax=ax)
     save(fig, "4_rmsse_by_store.png")
 
-    # 5. bias by store - the thing RMSSE cannot show
+    # 5. bias by store, the thing RMSSE cannot show
     fig, ax = plt.subplots(figsize=(10, 3.4))
     plots.plot_bias_by_store(scores, stats, item_id=item, ax=ax)
     save(fig, "5_bias_by_store.png")
@@ -179,8 +187,9 @@ def render_evaluation(cfg: Config | None = None) -> list[str]:
 
 def render_order(cfg: Config | None = None) -> list[str]:
     """
-    The order-quantity figures (FPP §5.5, §5.9). Needs the two-year run: the
-    first year calibrates each method's error quantiles, the second is judged.
+    The order-quantity figures (notebook 03; FPP §5.5, §5.9). Needs the
+    two-year run. The first year calibrates each method's error quantiles and
+    the second is judged.
     """
     from src.order import (
         calibrate,

@@ -1,16 +1,18 @@
 """
-From forecast to order quantity (FPP §5.5, §5.9).
+From forecast to order quantity (FPP §5.5, §5.9). Tests for the ordering
+prototype in order.py.
 
-Documented behaviour under test (order.py docstrings, README):
-  - weekly totals drop closure days; error = actual - forecast, positive is a
-    shortfall;
-  - pinball with the factor of two: tau = 0.5 gives |error|; shortfall costs
-    2*tau per unit, surplus 2*(1-tau);
-  - calibration uses only folds whose origin is before `scored_from`, scoring
-    only folds at or after it; q = forecast + tau-quantile of the errors;
-  - the expanding window uses every fold before the one being scored;
-  - coverage = share of weeks with actual <= q; pinball_rel divides by the
-    store's mean weekly sales over the scored period.
+What the tests hold the code to (order.py docstrings, README):
+  - weekly totals drop closure days, and error = actual - forecast, so a
+    positive error is a shortfall
+  - pinball with the factor of two. tau = 0.5 gives |error|, a shortfall
+    costs 2*tau per unit and a surplus 2*(1-tau)
+  - calibration uses only folds whose origin is before `scored_from` and
+    scores only folds at or after it. q = forecast + tau-quantile of the
+    errors
+  - the expanding window uses every fold before the one being scored
+  - coverage = share of weeks with actual <= q. pinball_rel divides by the
+    store's mean weekly sales over the scored period
 """
 
 from __future__ import annotations

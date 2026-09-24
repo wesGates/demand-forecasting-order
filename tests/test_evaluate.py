@@ -1,15 +1,17 @@
 """
-Step 5 - the walk-forward harness and the scoring it feeds.
+Step 5. The walk-forward harness and the scoring it feeds.
 
-Documented behaviour under test (README, step5_evaluate docstrings):
-  - one row per (series, fold, method, horizon day), actual + forecast + scale;
-  - the folds tile the held-out window; nothing after the origin is visible;
+What the tests hold the code to (README, step5_evaluate docstrings):
+  - one row per (series, fold, method, horizon day) with actual, forecast
+    and scale
+  - the folds tile the held-out window and nothing after the origin is
+    visible
   - RMSSE = RMSE / lag-7 naive RMSE on the pre-holdout training data, one
-    denominator per series shared by every fold and method;
-  - closure days are carried in `predictions` but dropped from every score;
-  - a fold is a holiday fold if any scored day is in the holiday window;
-  - bias = mean(forecast - actual);
-  - the by-store table lists the busiest store first, best method first.
+    denominator per series shared by every fold and method
+  - closure days are carried in `predictions` but dropped from every score
+  - a fold is a holiday fold if any scored day is in the holiday window
+  - bias = mean(forecast - actual)
+  - the by-store table lists the busiest store first, best method first
 """
 
 from __future__ import annotations

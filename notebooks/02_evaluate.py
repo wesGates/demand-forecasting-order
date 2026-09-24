@@ -4,34 +4,30 @@
 # FPP §1.6's last step. Every method from step 4 is run through every
 # walk-forward fold, and what it forecast is set against what actually sold.
 #
-# Like `01_explore`, this notebook is the *procedure* — it runs unchanged for
-# any item in `STUDY_ITEMS`, and prints its findings rather than stating them.
-# What those findings mean for a particular product goes in a dated write-up
-# under `findings/`.
+# Like `01_explore`, this notebook is the procedure. It runs unchanged for
+# any item in `STUDY_ITEMS` and prints its findings. What those findings mean
+# for a particular product goes in a dated write-up under `findings/`.
 #
 # Two things to hold onto while reading:
 #
-# - **RMSSE** (FPP §5.8) is the forecast's error divided by the error a naive
-#   forecast would have made on the training data. 1.0 means "no better than
-#   repeating last week's same weekday"; 0.8 means 20% better. It is
+# - RMSSE (FPP §5.8) is the forecast's error divided by the error a seasonal
+#   naive forecast would have made on the training data. 1.0 means no better
+#   than repeating last week's same weekday, 0.8 means 20% better. It is
 #   scale-free, so a 100-unit store and a 15-unit store are comparable.
-# - **Every method in a series-fold shares the same denominator**, so RMSSE
-#   never changes *which* method wins a fold. It changes how stores and folds
-#   are compared to each other.
+# - Every method in a series-fold shares the same denominator, so RMSSE never
+#   changes which method wins a fold. It changes how stores and folds compare
+#   to each other.
 #
-# Run a cell with **Shift+Enter**.
+# Run a cell with Shift+Enter.
 
 # %%
 import sys
 from pathlib import Path
 
 # Put the repo root on sys.path so `from src import ...` resolves however this
-# file is run: cell-by-cell in the Interactive Window, which starts in
-# notebooks/, or as a plain script from any directory at all. This was
-# `sys.path.append("..")`, which assumed the working directory was always
-# notebooks/ - true for the Interactive Window, but not for
-# `python notebooks/02_evaluate.py`, which raised ModuleNotFoundError instead.
-# Searching upward for the directory that actually holds src/ works from either.
+# file is run, cell-by-cell in the Interactive Window or as a plain script from
+# any directory. Changed from `sys.path.append("..")` to avoid the
+# ModuleNotFoundError that `python notebooks/02_evaluate.py` raised from the repo root.
 if not any((Path(p) / "src").is_dir() for p in sys.path):
     sys.path.insert(
         0,
@@ -91,10 +87,10 @@ except NameError:
 # %% [markdown]
 # ## The problem definition
 #
-# The same object step 3 used. Note the two scoring fields — the RMSSE scaling
-# lag and window — and the fold layout. Changing `n_folds` here changes how
-# many weeks get scored *and* moves the classification cutoff in step 3
-# earlier, since both read from `Config.holdout_start`.
+# The same object step 3 used. Note the two scoring fields (the RMSSE
+# scaling lag and window) and the fold layout. Changing `n_folds` here
+# changes how many weeks get scored and moves the classification cutoff in
+# step 3 earlier, since both read from `Config.holdout_start`.
 
 # %%
 cfg = Config(item_ids=STUDY_ITEMS)
@@ -103,23 +99,23 @@ print(cfg.describe())
 # %% [markdown]
 # ## Run the walk-forward
 #
-# For every store and every fold: cut the history at the origin, hand each
+# For every store and every fold, cut the history at the origin, hand each
 # method only what it is allowed to see, collect its forecast, and record the
-# actual. The result is one long table — one row per store, fold, method, and
-# day ahead — that every number and plot below is computed from. There is
-# exactly one place where a forecast meets an actual.
+# actual. The result is one long table, one row per store, fold, method and
+# day ahead, that every number and plot below is computed from. There is one
+# place where a forecast meets an actual.
 #
-# A full run takes on the order of twenty minutes — ARIMA is the slow one —
-# so the result is cached to parquet under a key that includes the config
-# *and the source of the model code*. Editing a model invalidates the cache
-# by itself; `run_walk_forward(..., use_cache=False)` forces a rerun. The
-# validator (`python -m src.validate`) should be green before any of these
-# numbers are quoted.
+# The result is cached to parquet under a key that includes the config and
+# the source of the model code, so editing a model invalidates the cache by
+# itself. `run_walk_forward(..., use_cache=False)` forces a rerun. A full run
+# takes a few minutes with the parallel harness, ARIMA being the slow one.
+# The validator (`python -m src.validate`) should be green before any of
+# these numbers are quoted.
 #
 # Two things happen to the scored days before any number is computed. The
-# closure day the loader flagged (Christmas) is dropped — forecasting a shut
-# store is not a demand question. And every fold is tagged `normal` or
-# `holiday`: a fold is a holiday fold if any scored day falls from two days
+# closure day the loader flagged (Christmas) is dropped, because forecasting a
+# shut store is not a demand question. And every fold is tagged `normal` or
+# `holiday`. A fold is a holiday fold if any scored day falls from two days
 # before a major event to one day after it.
 
 # %%
@@ -131,9 +127,8 @@ top_id, top_store = stats.iloc[0]["id"], stats.iloc[0]["store_id"]
 
 predictions = run_walk_forward(df, cfg)
 scores = score_folds(predictions)
-# Printed text stays ASCII: a Windows console that is not UTF-8 will choke on
-# an arrow or a middle dot, and a notebook that only runs in one terminal is
-# not a notebook that runs.
+# Printed text stays ASCII. A Windows console that is not UTF-8 chokes on an
+# arrow or a middle dot.
 print(f"{len(predictions):,} forecast-days | {len(scores):,} series-fold-method scores")
 print(
     f"scored window: {predictions['target_date'].min().date()} -> "
@@ -144,24 +139,26 @@ print(
 # ## The headline table
 #
 # One row per method, best first. FPP §5.8 lays its accuracy tables out this
-# way — methods as rows, measures as columns.
+# way, methods as rows and measures as columns.
 #
-# **What to look for:**
+# What to look for:
 #
-# - How far the models sit below the benchmarks, and **whether the three models
-#   are meaningfully apart from each other.** Medians within a few hundredths
-#   are a tie; say so rather than crowning one.
-# - **Bias.** Positive means over-forecasting. For replenishment this matters
-#   in its own right — a consistent under-forecast turns into stockouts.
+# - How far the models sit below the benchmarks, and whether the three
+#   models are meaningfully apart from each other. Medians within a few
+#   hundredths are a tie. Say so.
+# - Bias. Positive means over-forecasting. For replenishment this matters in
+#   its own right. A consistent under-forecast turns into stockouts.
 # - Whether `naive` and `drift` sit near or above 1.0. With a seasonal-naive
-#   denominator, "repeat yesterday" *should* score worse than 1.0 on a series
+#   denominator, "repeat yesterday" should score worse than 1.0 on a series
 #   with a weekly cycle.
-# - **The two week columns.** `rmsse_normal` and `rmsse_holiday` are the same
-#   score on the ordinary folds and on the holiday folds. Quote both, never
-#   just the pooled mean: a pooled number cannot say whether a method's
-#   advantage comes from the ordinary weeks or from the handful where the
-#   calendar does the work. ETS is the one model that cannot be told a
-#   holiday is coming, and the holiday column is where that shows.
+# - The two week columns. `rmsse_normal` and `rmsse_holiday` are the same
+#   score on the ordinary folds and on the holiday folds. Quote both. A pooled
+#   number cannot say whether a method's advantage comes from the ordinary
+#   weeks or from the handful where the calendar does the work. ETS is the
+#   one model that cannot be told a holiday is coming, and the holiday column
+#   is where that shows.
+# - `n_unscored` and `n_fallback`. Folds with no score, and folds where a
+#   method gave up and returned the 28-day mean. Both should be zero here.
 
 # %%
 summarise(scores).round(3)
@@ -170,14 +167,12 @@ summarise(scores).round(3)
 # ## By store
 #
 # Stores down (busiest first), methods across (best first). This is the
-# study's actual question: **does which-method-wins depend on the store?**
+# study's question. Does which method wins depend on the store?
 #
-# **What to look for:** read down the volume gradient. If the models' advantage
-# over `moving_average_28` narrows — or reverses — at the quietest stores, that
-# is the pattern to report. It says the models are earning their keep where
-# there is signal to learn, and not where there isn't. Then compare the
-# holiday-week table: the store ranking can change when the calendar is
-# doing the work.
+# Read down the volume gradient. If the models' advantage over
+# `moving_average_28` narrows or reverses at the quietest stores, that is the
+# pattern to report. Then compare the holiday-week table, since the store
+# ranking can change when the calendar is doing the work.
 
 # %%
 rmsse_by_store(scores).round(3)
@@ -191,18 +186,18 @@ rmsse_by_store(scores, "holiday").round(3)
 # %% [markdown]
 # ## Win rates
 #
-# Rows beat columns: the share of series-folds where the row's RMSSE was lower
-# than the column's. 0.5 is "no better than". This is a blunter instrument than
-# RMSSE — it says how *often*, not by how *much* — which is why it sits beside
-# the table rather than replacing it.
+# Rows beat columns. The share of series-folds where the row's RMSSE was
+# lower than the column's. 0.5 is "no better than". A blunter instrument than
+# RMSSE, it says how often and not by how much, which is why it sits beside
+# the table.
 #
-# **What to look for:** `moving_average_28` against `seasonal_naive`. A mean-based
-# method beating a single-past-day method more often than not is the √2 effect
-# from step 4's notes, and it is why this project reports six benchmarks
-# instead of one. And `seasonal_naive_364` — "this day last year", what an
-# orderer checks before a holiday — against `seasonal_naive`, "this day last
-# week": on an item whose level drifts, last year's lookup carries the old
-# level with it, and the holiday-week table says whether it helps at all.
+# Two pairs to look at. `moving_average_28` against `seasonal_naive`: a
+# mean-based method beating a single-past-day method more often than not is
+# the √2 effect from step 4's notes, and it is why this project reports six
+# benchmarks. And `seasonal_naive_364` ("this day last year", what an orderer
+# checks before a holiday) against `seasonal_naive` ("this day last week"):
+# on an item whose level drifts, last year's lookup carries the old level
+# with it, and the holiday-week table says whether it helps at all.
 
 # %%
 win_rates(scores).round(2)
@@ -211,23 +206,20 @@ win_rates(scores).round(2)
 win_rates(scores, "holiday").round(2)
 
 # %% [markdown]
-# ## Forecasts against actuals — FPP §5.8
+# ## Forecasts against actuals (FPP §5.8)
 #
-# The book's own verdict on its version of this figure is *"it is obvious from
-# the graph."* That is the bar: if a method is better, this should show it
-# before any table does. Drawn for the busiest store; change `top_id` to look
-# at another.
+# The book's verdict on its version of this figure is "it is obvious from the
+# graph". If a method is better, this should show it before any table does.
+# Drawn for the busiest store. Change `top_id` to look at another.
 #
-# **Reading it:** black is what sold. Coloured lines are the three models, grey
-# the two strongest benchmarks. The faint vertical lines are fold origins —
-# every seventh day the forecaster was re-run from a fresh standing point, so a
-# kink there is the origin moving, not a property of the method. The heavier
-# vertical line is where the held-out window begins; everything left of it is
-# lead-in context only.
+# Black is what sold. Coloured lines are the three models, grey the two
+# strongest benchmarks. On the weekly layout the faint vertical lines are
+# fold origins, and a kink there is the origin moving. On the every-day
+# layout the one-step forecast is drawn. The heavier vertical line is where
+# the held-out window begins. Everything left of it is lead-in context.
 #
-# **What to look for:** does the model follow the *weekly shape* (weekend
-# peaks) or just the level? Does it lag behind level shifts? Are its misses
-# one-sided?
+# Does the model follow the weekly shape (weekend peaks) or just the level?
+# Does it lag behind level shifts? Are its misses one-sided?
 
 # %%
 fig, ax = plt.subplots(figsize=(12.5, 3.6))
@@ -237,23 +229,22 @@ plots.plot_forecast_folds(
 plots.show()
 
 # %% [markdown]
-# ## Error by horizon — FPP §5.10
+# ## Error by horizon (FPP §5.10)
 #
-# The book's figure 5.24: error as a function of how many days ahead the
-# forecast was made. A day-ahead forecast knows more than a week-ahead one, so
-# the lines should rise with h.
+# The book's figure 5.24. Error as a function of how many days ahead the
+# forecast was made. A day-ahead forecast knows more than a week-ahead one,
+# so the lines should rise with h.
 #
-# **What to look for:** *how steeply* each line rises. A flat line means the
-# method is not using the recent past at all — a long-run mean behaves this
-# way. A steep line means the method's edge is concentrated at short horizons.
-# Where the model lines cross the benchmark lines, if they do, is the horizon
-# beyond which the model stops earning its complexity.
+# Read how steeply each line rises. A flat line means the method is not
+# using the recent past at all, which is how a long-run mean behaves. A steep
+# line means the method's edge is concentrated at short horizons. Where the
+# model lines cross the benchmark lines, if they do, is the horizon beyond
+# which the model stops earning its complexity.
 #
-# **Caveat.** Our fold origins step by exactly 7 days, so every origin is the
-# same weekday — h = 1 is always Monday, h = 7 always Sunday. This plot
-# therefore mixes "how far ahead" with "which weekday", and Sunday is the
-# busiest, noisiest day. If the curves are not a clean monotone rise, that is
-# why. `OPEN_QUESTIONS.md` has the options for separating the two.
+# On the weekly layout the origins step by exactly 7 days, so every origin is
+# the same weekday and h = 7 is always Sunday, the busiest day. The plot then
+# mixes "how far ahead" with "which weekday". The every-day layout removes
+# this (item 2) and is the reported one.
 
 # %%
 fig, ax = plt.subplots(figsize=(7, 3.4))
@@ -261,14 +252,14 @@ plots.plot_rmsse_by_horizon(predictions, ax=ax)
 plots.show()
 
 # %% [markdown]
-# ## RMSSE by store — the study's own view
+# ## RMSSE by store, the study's own view
 #
-# Not one of FPP's figures; it is the picture of the by-store table above.
+# Not one of FPP's figures. It is the picture of the by-store table above.
 # Busiest store on the left. The line at 1.0 is "as good as seasonal naive on
 # the training data".
 #
-# **What to look for:** whether the coloured markers pull away from the grey
-# pack at the busy stores and sink back into it at the quiet ones.
+# Watch whether the coloured markers pull away from the grey pack at the busy
+# stores and sink back into it at the quiet ones.
 
 # %%
 fig, ax = plt.subplots(figsize=(10, 3.8))
@@ -276,33 +267,29 @@ plots.plot_rmsse_by_store(scores, stats, item_id=ITEM, ax=ax)
 plots.show()
 
 # %% [markdown]
-# ## Residual diagnostics — FPP §5.4
+# ## Residual diagnostics (FPP §5.4)
 #
-# The book says a good method's residuals should be, essentially,
-# **uncorrelated** and **centred on zero**; and usefully, of **constant
-# variance** and roughly **normal**. One panel per question, for each model at
-# the busiest store.
+# The book says a good method's residuals are uncorrelated and centred on
+# zero, and ideally of constant variance and roughly normal. One panel per
+# question, for each model at the busiest store.
 #
-# **Reading it:**
+# - Time plot. Is the mean near zero (printed in the title), and is the
+#   spread steady across the window?
+# - ACF. Is anything left that the method should have caught? Bars outside
+#   the grey band are structure the forecast missed. The Ljung-Box p-value in
+#   the title tests this. Above 0.05 means the residuals look like white
+#   noise.
+# - Histogram. Roughly symmetric and bell-shaped, or skewed and heavy-tailed?
 #
-# - **Time plot** — is the mean near zero (printed in the title), and is the
-#   spread steady across the window rather than growing or shrinking?
-# - **ACF** — is anything left that the method should have caught? Bars
-#   outside the grey band are structure the forecast missed. The Ljung-Box
-#   p-value in the title tests this formally; above 0.05 means the residuals
-#   are indistinguishable from white noise.
-# - **Histogram** — roughly symmetric and bell-shaped, or skewed / heavy-tailed?
+# FPP's remedy for a non-zero mean is worth knowing: "if the residuals have
+# mean m, simply add m to all forecasts". Correlation is harder, and the book
+# defers it to Chapter 10.
 #
-# FPP's remedy for a non-zero mean is blunt and worth knowing: *"if the
-# residuals have mean m, simply add m to all forecasts."* Correlation is
-# harder, and the book defers it to Chapter 10.
-#
-# These are held-out residuals over a full year per store, so the verdicts
-# carry weight. But read the ACF with one thing in mind: FPP states the test
-# for one-step residuals, and these are 1- to 7-step-ahead errors from a
-# shared origin, so correlation out to lag 6 is expected *even for a perfect
-# model*. A spike at lag 7 or beyond, or a mean far from zero, is what would
-# count against a method.
+# On the every-day layout the one-step residuals are used, which is what FPP
+# states the test for, so the verdicts are real ones. On the weekly layout
+# these are 1- to 7-step-ahead errors from a shared origin, and correlation
+# out to lag 6 is expected even for a perfect model. There, a spike at lag 7
+# or beyond, or a mean far from zero, is what would count against a method.
 #
 # The loop reads the model registry, so a model added in step 4 appears here
 # without editing the notebook.
@@ -321,18 +308,18 @@ plots.show()
 #
 # The answers go in a dated file under `findings/`, alongside step 3's:
 #
-# 1. **Which methods beat the benchmarks, and by how much** — RMSSE means and
+# 1. Which methods beat the benchmarks, and by how much. RMSSE means and
 #    medians, and whether the models are separable from each other.
-# 2. **Whether the ranking depends on the store** — the by-store table and
-#    figure, read along the volume gradient — **and on the kind of week.** A
-#    method that wins the ordinary weeks and loses the holiday weeks is a
-#    different finding from one that wins both.
-# 3. **How error grows with horizon** — and whether the models' edge is at
-#    short lead times only.
-# 4. **Whether the residuals are clean** — zero mean, no leftover structure.
-#    A non-zero mean is a bias worth correcting; leftover ACF structure is a
+# 2. Whether the ranking depends on the store (the by-store table and figure,
+#    read along the volume gradient) and on the kind of week. A method that
+#    wins the ordinary weeks and loses the holiday weeks is a different
+#    finding from one that wins both.
+# 3. How error grows with horizon, and whether the models' edge is at short
+#    lead times only.
+# 4. Whether the residuals are clean. Zero mean, no leftover structure. A
+#    non-zero mean is a bias worth correcting, leftover ACF structure is a
 #    feature the model is missing.
-# 5. **Where the models lose** — named, not hidden. The stores or folds where
-#    a benchmark wins are the honest edge of what the method can do.
+# 5. Where the models lose, named. The stores or folds where a benchmark wins
+#    are the honest edge of what the method can do.
 #
 # The forecast is not yet an order. `03_order` takes it the rest of the way.

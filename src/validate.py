@@ -1,43 +1,33 @@
 """
-The validator. Run it before trusting any number this project produces.
+The validator. Run it before quoting any number from this project.
 
     python -m src.validate
 
-Nine checks in seven groups, each aimed at a different way of being wrong. What
-they have in common is the only thing that matters: **every bug they catch
-still produces plausible-looking output.** A result that is obviously broken
-gets fixed the moment you see it; a result that is quietly wrong ends up in a
-report.
+Ten checks. Each one targets a bug that would still produce plausible looking
+output, which is the kind that ends up in a report.
 
-  1. Closed-form benchmarks - does each method compute what its name says?
-     On a series that is 10 every day, every method must return exactly 10. On
-     a straight ramp, drift must extrapolate it perfectly. Catches off-by-one
-     indexing, which on real data looks entirely reasonable.
-
-  2. Feature spot-checks - is `lag_7` really seven days back?
-     Each feature is recomputed from the raw panel by *date filtering*, while
-     the implementation uses array slicing. Two different routes to the same
-     number; if they disagree, one of them is wrong.
-
-  3. SNAP flags - does each row carry its own state's schedule?
-     Every store-date compared against the calendar's column for that state.
-     Reading the wrong state's column would still give a plausible 0/1 flag
-     on a third of days; only a date-by-date comparison catches it.
-
-  4. Noise floor and shuffled target - is anything reading the future?
-     Synthetic data whose irreducible error is known by construction, and a
-     scrambled target with no pattern left to find. The structural date
-     assertion in `features.py` is stronger for the leak we know about; these
-     are the net for the ones we do not.
-
-  5. Determinism - does the same input give the same answer twice?
-     Cheap, and it is what makes a reported number reproducible.
-
-  6. Holiday calendar - are the proximity counts and closure flags right?
-     Recounted by hand from the raw calendar for every date in the panel.
-
-  7. Quantile scoring - does the order-quantity arithmetic do what it says?
-     Pinball closed form, and coverage on errors of known distribution.
+  - Harness parity. The parallel harness and the in-process path give the
+    same forecasts.
+  - Closed-form benchmarks. On a series that is 10 every day, every method
+    returns 10. On a straight ramp, drift extrapolates it exactly. Catches
+    off-by-one indexing.
+  - Feature spot-checks. Each feature is recomputed from the raw panel by
+    date filtering; the implementation slices arrays. If the two disagree,
+    one is wrong.
+  - SNAP flags. Every store-date compared against the calendar column for
+    its own state. Reading the wrong state would still give a plausible 0/1
+    flag on a third of days.
+  - Holiday calendar. The proximity counts and closure flags recounted by
+    hand from the raw calendar.
+  - Quantile scoring. The order-quantity arithmetic on inputs with a known
+    answer.
+  - Determinism. Same input, same forecast, twice.
+  - Noise floor and shuffled target. Synthetic data with a known irreducible
+    error, and a scrambled target with nothing to learn. The date assertion
+    in features.py catches the leak we know about; these catch the ones we
+    dont.
+  - Layouts and pooling. The two nets above repeated with every day an origin
+    and with a pooled model.
 """
 
 from __future__ import annotations
@@ -115,9 +105,9 @@ def _synthetic_panel(
 
     sales = level + weekly shape + slow trend + noise(0, noise_sd)
 
-    Everything but the noise is a deterministic function of the date, so a
-    perfect forecaster would predict it exactly and be left with the noise
-    alone. `noise_sd` is therefore the best RMSE physically achievable.
+    Everything except the noise is a fixed function of the date. A perfect
+    forecaster is left with the noise alone, so `noise_sd` is the best RMSE
+    anyone can reach.
     """
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2013-01-07", periods=n_days, freq="D")
@@ -150,13 +140,15 @@ def _walk_forward_rmse(panel: pd.DataFrame, cfg: Config) -> tuple[float, float, 
     Run XGBoost and the mean benchmark over every fold of a synthetic panel.
 
     Returns (model RMSE, mean-benchmark RMSE, number of fold-series compared).
-    Used by both the noise-floor and shuffled-target checks.
+    Shared by the noise-floor and shuffled-target checks. This is a hand-rolled
+    copy of the harness loop; the harness itself is exercised by
+    `check_harness_parity`.
     """
     origins = cfg.fold_origins(panel["date"].max())
     model_err, bench_err, n = [], [], 0
 
-    # Honour the pooling setting: with `pool_by` every series in the pool
-    # trains on all of their rows, exactly as the harness does.
+    # With `pool_by`, every series in the pool trains on all of their rows,
+    # the same as the harness does.
     matrices = {
         sid: build_supervised(s.sort_values("date").reset_index(drop=True), cfg.horizon)
         for sid, s in panel.groupby("id", sort=True, observed=True)
@@ -214,17 +206,17 @@ def _walk_forward_rmse(panel: pd.DataFrame, cfg: Config) -> tuple[float, float, 
 
 
 def check_benchmarks_closed_form() -> dict:
-    """Every benchmark, on series whose correct answer is known by hand."""
+    """Every benchmark, on two series whose correct answer is known by hand."""
     failures = []
 
-    # A flat series: there is only one defensible forecast, and it is 10.
+    # A flat series. The only defensible forecast is 10.
     ctx = _context(_series_frame(np.full(200, 10.0)))
     for name, fn in BENCHMARKS.items():
         got = fn(ctx)
         if not np.allclose(got, 10.0, atol=TOL):
             failures.append(f"{name} on a constant-10 series returned {got}")
 
-    # A ramp y_t = t. Slope is exactly 1 per day, so drift must continue it.
+    # A ramp y_t = t. The slope is exactly 1 per day and drift must continue it.
     n = 200
     ctx = _context(_series_frame(np.arange(1, n + 1, dtype=float)))
     last = float(n - 7)  # history stops 7 days before the end
@@ -233,12 +225,12 @@ def check_benchmarks_closed_form() -> dict:
         "drift": last + np.arange(1, 8),
         "mean": np.full(7, np.arange(1, n - 6).mean()),
         "seasonal_naive": np.arange(last - 6, last + 1),
-        # history is only 193 days, shorter than 364, so this must fall back to
+        # the history is only 193 days, shorter than 364, so this falls back to
         # the weekly seasonal naive
         "seasonal_naive_364": np.arange(last - 6, last + 1),
         "moving_average_28": np.full(7, np.arange(last - 27, last + 1).mean()),
     }
-    # And with 400 days of history the lag-364 benchmark must reach back a year.
+    # With 400 days of history the lag-364 benchmark has to reach back a year.
     n2 = 400
     ctx2 = _context(_series_frame(np.arange(1, n2 + 1, dtype=float)))
     want = np.arange(n2 - 7 + 1, n2 + 1) - 364.0  # target day t -> value at t-364
@@ -267,11 +259,11 @@ def check_benchmarks_closed_form() -> dict:
 
 def check_features_hand_computed(cfg: Config | None = None) -> dict:
     """
-    Recompute every feature from the raw panel by date, and compare.
+    Recompute every feature from the raw panel by date and compare.
 
-    The implementation slices numpy arrays by position; this recomputes the same
-    quantities by filtering the DataFrame on dates. Two independent routes - a
-    single off-by-one shows up as a mismatch instead of as a plausible number.
+    The implementation slices numpy arrays by position. This recomputes the
+    same quantities by filtering the frame on dates. A single off-by-one shows
+    up as a mismatch instead of a plausible number.
     """
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
     panel = load_panel(cfg, verbose=False)
@@ -289,10 +281,10 @@ def check_features_hand_computed(cfg: Config | None = None) -> dict:
         feats = build_fold_features(history, targets, origin)
         usable = history
 
-        # `sales` is stored as float32 to halve panel memory. The feature code
-        # promotes to float64 before doing any arithmetic; this recomputation
-        # must do the same, or the two sides differ at the 1e-6 level purely
-        # from float32 accumulation and every rolling mean looks like a bug.
+        # Known mistake: `sales` is float32 in the panel and the feature code
+        # promotes to float64 before any arithmetic. Recomputing in float32
+        # made every rolling mean differ at the 1e-6 level and look like a bug.
+        # Promote here too.
         def sales_on(day: pd.Timestamp) -> float:
             return float(series.loc[series["date"] == day, "sales"].iloc[0])
 
@@ -300,7 +292,7 @@ def check_features_hand_computed(cfg: Config | None = None) -> dict:
             return values.astype("float64")
 
         for k in LAGS:
-            # lag_k counts back from the origin, so lag_1 IS the origin day.
+            # lag_k counts back from the origin, so lag_1 is the origin day itself.
             want = sales_on(origin - pd.Timedelta(days=k - 1))
             got = float(feats[f"lag_{k}"].iloc[0])
             checked += 1
@@ -330,7 +322,7 @@ def check_features_hand_computed(cfg: Config | None = None) -> dict:
                         f"got {got}, want {want}"
                     )
 
-        # horizon must be the real day gap, 1..h
+        # horizon has to be the real day gap, 1..h
         if list(feats["horizon"]) != list(range(1, len(targets) + 1)):
             failures.append(f"horizon at {origin.date()}: {list(feats['horizon'])}")
         checked += 1
@@ -350,11 +342,11 @@ def check_features_hand_computed(cfg: Config | None = None) -> dict:
 
 def check_layouts_and_pooling(noise_sd: float = 2.0, seed: int = 7) -> dict:
     """
-    The noise-floor and shuffled-target nets, repeated under the two
-    settings the default checks do not exercise: every day an origin
-    (`fold_step=1`, overlapping windows) and one model pooled across the
-    series. A leak that only opens when windows overlap, or when other
-    series' rows sit in the training pool, would show here and nowhere else.
+    The noise-floor and shuffled-target nets again, under the two settings the
+    default checks skip. Every day an origin (`fold_step=1`, overlapping
+    windows), and one model pooled across the series. A leak that only opens
+    when windows overlap, or when other series' rows sit in the training
+    pool, shows up here and nowhere else.
     """
     panel = _synthetic_panel(n_series=6, n_days=1000, noise_sd=noise_sd)
     rng = np.random.default_rng(seed)
@@ -394,15 +386,15 @@ def check_noise_floor(noise_sd: float = 2.0) -> dict:
     """
     Model error must not fall below the noise that was injected.
 
-    No honest forecaster can beat noise you generated yourself. Error
-    meaningfully under the floor means information is arriving from the future.
+    No honest forecaster beats noise you generated yourself. Error clearly
+    under the floor means information is arriving from the future.
     """
     cfg = Config(n_folds=10, min_train_days=200)
     observed, _, n = _walk_forward_rmse(_synthetic_panel(noise_sd=noise_sd), cfg)
     ratio = observed / noise_sd
 
-    # ~420 scored points, so the RMSE's own sampling error is a few percent.
-    # 0.90 is roughly three standard errors below the floor.
+    # About 420 scored points, so the RMSE has a sampling error of a few
+    # percent. 0.90 is roughly three standard errors below the floor.
     return {
         "check": "noise floor",
         "tested": f"{n} fold-series windows on synthetic data",
@@ -417,9 +409,9 @@ def check_shuffled_target(seed: int = 7) -> dict:
     """
     With the target scrambled, no model may beat a mean-predicting benchmark.
 
-    The benchmark must be mean-based. Against seasonal naive this test fires on
-    a perfectly healthy pipeline: seasonal naive stakes everything on one past
-    day, so on noise its error is about sqrt(2) worse than the mean, and any
+    The benchmark has to be mean-based. Against the seasonal naive this test
+    fires on a healthy pipeline. Seasonal naive stakes everything on one past
+    day, its error on pure noise is about sqrt(2) worse than the mean, and any
     model that predicts near the mean beats it without skill.
     """
     rng = np.random.default_rng(seed)
@@ -434,7 +426,7 @@ def check_shuffled_target(seed: int = 7) -> dict:
     model, bench, n = _walk_forward_rmse(panel, cfg)
     ratio = model / bench
 
-    # Model should be no better than the mean - ratio at or above 1.0.
+    # The model should be no better than the mean, a ratio at or above 1.0.
     return {
         "check": "shuffled target",
         "tested": f"{n} fold-series windows, pattern destroyed",
@@ -452,7 +444,8 @@ def check_shuffled_target(seed: int = 7) -> dict:
 
 
 def check_determinism(cfg: Config | None = None) -> dict:
-    """Identical inputs must produce byte-identical forecasts."""
+    """Identical inputs must give byte-identical forecasts. Cheap, and it is
+    what makes a reported number reproducible."""
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
     panel = load_panel(cfg, verbose=False)
     series = panel[panel["id"] == panel["id"].iloc[0]].sort_values("date")
@@ -495,14 +488,13 @@ def check_snap_flags(cfg: Config | None = None) -> dict:
     Every row's SNAP flag must equal the raw calendar's column for that row's
     own state, on every date.
 
-    The calendar carries three columns - snap_CA, snap_TX, snap_WI - and the
-    loader picks one per row. The failure this guards against is quiet: if
-    every row read snap_CA, the flag would still be 0/1, still fire on about a
-    third of days, and every downstream plot would look perfectly plausible.
-    Only a date-by-date comparison against the source catches it.
+    The calendar carries snap_CA, snap_TX and snap_WI and the loader picks one
+    per row. If every row read snap_CA the flag would still be 0/1, still fire
+    on about a third of days, and every plot downstream would look fine. A
+    date-by-date comparison against the source is what catches it.
 
-    The days-of-month are reported too, so a human can eyeball that each state
-    has its own schedule rather than all three sharing one.
+    The days of the month are reported too, so a person can eyeball that each
+    state has its own schedule.
     """
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
     panel = load_panel(cfg, verbose=False)
@@ -544,9 +536,9 @@ def check_holiday_calendar(cfg: Config | None = None) -> dict:
     The proximity columns must agree with a by-hand recount from the raw
     calendar, and the closure flag must sit on exactly the closure events.
 
-    Both are the kind of thing that fails plausibly: an off-by-one in
-    `days_to_holiday` still gives small integers near holidays, and a closure
-    flag on the wrong day still imputes *something*.
+    Both fail plausibly. An off-by-one in `days_to_holiday` still gives small
+    integers near holidays, and a closure flag on the wrong day still imputes
+    something.
     """
     cfg = cfg or Config(item_ids=STUDY_ITEMS)
     panel = load_panel(cfg, verbose=False)
@@ -579,7 +571,7 @@ def check_holiday_calendar(cfg: Config | None = None) -> dict:
     flagged = set(panel.loc[panel["closure"], "date"])
     if flagged != (closures & set(days.index)):
         failures.append(f"closure flag on {sorted(d.date() for d in flagged)[:5]}...")
-    # Imputed closure days must no longer be zero on a continuously stocked item.
+    # Imputed closure days must no longer read zero on a continuously stocked item.
     still_zero = int((panel.loc[panel["closure"], "sales"] == 0).sum())
     if still_zero:
         failures.append(f"{still_zero} closure rows still read zero after imputation")
@@ -600,13 +592,13 @@ def check_holiday_calendar(cfg: Config | None = None) -> dict:
 
 def check_quantile_scoring(seed: int = 3) -> dict:
     """
-    The order-quantity arithmetic, on inputs whose right answer is known.
+    The order-quantity arithmetic (src/order.py) on inputs with a known answer.
 
-    Pinball at tau = 0.5 must equal the absolute error (FPP's factor of two is
-    what makes that true), and it must reward a correct quantile: on errors
-    drawn from a known distribution, calibrating on one sample and scoring on
-    another must give coverage within a few points of tau, and a deliberately
-    shifted quantile must score worse.
+    Pinball at tau = 0.5 has to equal the absolute error, which is what FPP
+    §5.9's factor of two is for. It also has to reward a correct quantile. On
+    errors drawn from a known distribution, calibrating on one sample and
+    scoring on another gives coverage within a few points of tau, and a
+    deliberately shifted quantile scores worse.
     """
     from src.order import (
         calibrate,
@@ -631,8 +623,9 @@ def check_quantile_scoring(seed: int = 3) -> dict:
         )
 
     # --- calibration transfers between independent samples ------------------
-    # Two years of weekly errors from one N(0, 30) distribution, as a fake
-    # predictions table: one series, one method, seven identical days a week.
+    # Two years of weekly errors from one N(0, 30) distribution, built as a
+    # fake predictions table. One series, one method, seven identical days a
+    # week.
     n_weeks, horizon = 300, 7
     origins = pd.date_range("2013-01-06", periods=n_weeks, freq="7D")
     rows = []
@@ -666,7 +659,7 @@ def check_quantile_scoring(seed: int = 3) -> dict:
     for tau, got in coverage.items():
         if abs(got - tau) > 0.08:
             failures.append(f"coverage at tau={tau}: {got:.2f}, expected within 0.08")
-    # A shifted quantile must score worse than the calibrated one.
+    # A shifted quantile has to score worse than the calibrated one.
     s9 = scored[scored["tau"] == 0.9]
     shifted = pinball(s9["actual"], s9["q"] + 30, 0.9).mean()
     if not shifted > s9["pinball"].mean():
@@ -688,11 +681,10 @@ def check_quantile_scoring(seed: int = 3) -> dict:
 
 def check_harness_parity(seed: int = 11) -> dict:
     """
-    The parallel harness must produce exactly the forecasts the in-process
-    path produces, for per-series and pooled models and for the method whose
-    state is chosen once per series (ARIMA is covered by the tests; here the
-    cheaper ones). Runs the real harness, so a leak or a reordering inside
-    it - not just inside a model - shows as a mismatch.
+    The parallel harness must give exactly the forecasts the in-process path
+    gives, per-series and pooled. ARIMA is covered by the tests; the cheaper
+    methods run here. This runs the real harness, so a leak or a reordering
+    inside the harness itself shows up as a mismatch.
     """
     import tempfile
 

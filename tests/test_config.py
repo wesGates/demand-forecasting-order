@@ -1,11 +1,11 @@
 """
-Step 1 - the fold layout `Config` promises.
+Step 1. The fold layout `Config` promises.
 
-README: 52 walk-forward folds of 7 days, one full year, 25 May 2015 to
-22 May 2016; with the default fold step the folds tile the held-out period
-with no gaps and no overlap; with step 1 every day is an origin and the
-windows overlap; `holdout_start` is the single source of truth step 3 and
-step 5 share.
+From the README. 52 walk-forward folds of 7 days, one full year, 25 May 2015
+to 22 May 2016. With the default fold step the folds tile the held-out
+period with no gaps and no overlap. With step 1 every day is an origin and
+the windows overlap. `holdout_start` is the one value step 3 and step 5
+both read.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def test_folds_tile_the_holdout_exactly():
 
 
 def test_every_origin_is_the_same_weekday():
-    # OPEN_QUESTIONS #2: origins step by 7, so they all land on one weekday.
+    # On the weekly layout origins step by 7, so they all land on one weekday (item 2 fixed this).
     cfg = Config(n_folds=10)
     origins = cfg.fold_origins(LAST_M5_DATE)
     assert len({o.dayofweek for o in origins}) == 1
