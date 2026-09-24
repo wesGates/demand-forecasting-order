@@ -40,10 +40,6 @@ hashed as its syntax tree with docstrings removed, so editing a comment does
 not invalidate a run and editing logic does. (`_method_cache_path` and
 `_method_code` in `src/step5_evaluate.py`.)
 
-**Adoption.** When a configuration field is added with a default value, an
-older run that never knew the field is still valid; the loader adopts it
-rather than refitting. (`_adopt_cached`.)
-
 **"Cache equals code."** The claim that a cached file contains exactly what
 the current code would produce if run again. The key guarantees it when the
 key matches; the from-scratch refit (below) tests it directly.

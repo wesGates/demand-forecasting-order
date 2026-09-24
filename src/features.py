@@ -105,9 +105,7 @@ def holiday_window(frame: pd.DataFrame) -> pd.Series:
     )
 
 
-def history_features(
-    history: pd.DataFrame, target_dates: pd.Series, mask_holidays: bool = False
-) -> pd.DataFrame:
+def history_features(history: pd.DataFrame, target_dates: pd.Series) -> pd.DataFrame:
     """
     Summaries of one series' sales, all ending at the forecast origin.
 
@@ -120,11 +118,6 @@ def history_features(
     target_dates
         The days being forecast. Used only for the same-weekday features, which
         depend on which weekday is being predicted.
-    mask_holidays
-        If True, the rolling and same-weekday summaries skip days inside the
-        holiday window, so a spike does not carry into the following week's
-        level. The lags are left alone - each names one specific day, and the
-        model has the flags to know what kind of day it was.
 
     Returns
     -------
@@ -135,24 +128,14 @@ def history_features(
     sales = history["sales"].to_numpy(dtype=float)
     n = len(sales)
     out = pd.DataFrame(index=target_dates.index)
-    # Days the summaries may use. Everything, unless masking is on.
-    keep = np.ones(n, dtype=bool)
-    if mask_holidays and n:
-        keep = ~holiday_window(history).to_numpy(dtype=bool)
 
     # Lags counted back from the origin: lag_1 is the origin day itself.
     for k in LAGS:
         out[f"lag_{k}"] = sales[-k] if n >= k else np.nan
 
-    # Level and volatility over windows ending at the origin. A masked window
-    # is the same w calendar days with the flagged ones dropped - so a window
-    # that is entirely holiday falls back to the unmasked days rather than to
-    # nothing.
+    # Level and volatility over windows ending at the origin.
     for w in ROLL_WINDOWS:
         window = sales[-w:] if n >= 1 else np.array([])
-        if mask_holidays and len(window):
-            kept = window[keep[-w:]]
-            window = kept if len(kept) else window
         out[f"roll_mean_{w}"] = window.mean() if len(window) else np.nan
         out[f"roll_std_{w}"] = window.std(ddof=1) if len(window) > 1 else np.nan
 
@@ -166,9 +149,7 @@ def history_features(
     for k in DOW_WINDOWS:
         values = []
         for d in target_dow:
-            same = (hist_dow == d) & keep
-            if not same.any():
-                same = hist_dow == d
+            same = hist_dow == d
             values.append(sales[same][-k:].mean() if same.any() else np.nan)
         out[f"dow_mean_{k}"] = values
 
@@ -180,7 +161,6 @@ def build_fold_features(
     targets: pd.DataFrame,
     origin: pd.Timestamp,
     use_price: bool = False,
-    mask_holidays: bool = False,
 ) -> pd.DataFrame:
     """
     Assemble the feature matrix for one fold of one series.
@@ -196,7 +176,7 @@ def build_fold_features(
     feats = pd.concat(
         [
             calendar_features(targets, use_price=use_price),
-            history_features(history, targets["date"], mask_holidays=mask_holidays),
+            history_features(history, targets["date"]),
         ],
         axis=1,
     )
@@ -260,7 +240,6 @@ def build_supervised(
     series: pd.DataFrame,
     horizon: int,
     use_price: bool = False,
-    mask_holidays: bool = False,
 ) -> pd.DataFrame:
     """
     Every (origin, horizon) pair for one series, as a supervised learning table.
@@ -291,7 +270,6 @@ def build_supervised(
             targets,
             origin,
             use_price=use_price,
-            mask_holidays=mask_holidays,
         )
         feats["origin_date"] = origin
         feats["target_date"] = targets["date"].to_numpy()
@@ -305,8 +283,7 @@ def build_supervised(
         # the harness skip the series instead of aborting the whole run.
         frames.append(
             build_fold_features(
-                series, series.iloc[0:0], series["date"].iloc[-1],
-                use_price=use_price, mask_holidays=mask_holidays,
+                series, series.iloc[0:0], series["date"].iloc[-1], use_price=use_price
             ).assign(origin_date=pd.NaT, target_date=pd.NaT, target=np.nan)
         )
     out = pd.concat(frames, ignore_index=True)

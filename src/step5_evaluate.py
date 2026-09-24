@@ -89,7 +89,6 @@ def _supervised_path(cfg: Config, series_id: str, extent: tuple = ()):
             series_id,
             cfg.horizon,
             cfg.use_price,
-            cfg.mask_holidays,
             extent,  # first day, last day, rows: new days must rebuild the matrix
         )
     )
@@ -117,7 +116,6 @@ def supervised_matrices(df: pd.DataFrame, cfg: Config) -> dict[str, pd.DataFrame
                 series,
                 cfg.horizon,
                 use_price=cfg.use_price,
-                mask_holidays=cfg.mask_holidays,
             )
             tmp = path.with_suffix(".tmp")
             matrix.to_parquet(tmp, index=False)
@@ -219,47 +217,11 @@ def _method_code(method: str) -> str:
 def _method_cache_path(cfg: Config, method: str) -> Path:
     """
     One parquet per (config, method, code) under cache/predictions/, with a
-    JSON sidecar recording the config fields it was built from. The sidecar
-    is what lets a later config, with a new field at its default, adopt the
-    run instead of repeating it.
+    JSON sidecar recording the config fields it was built from.
     """
     key = repr((_config_fields(cfg), method, _method_code(method)))
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
     return cfg.cache_dir / "predictions" / f"{method}_{digest}.parquet"
-
-
-def _adopt_cached(cfg: Config, method: str) -> Path | None:
-    """
-    Find an earlier run of `method` that this config can reuse.
-
-    A run is reusable when it was built by the same code (same digest), and
-    every config field the two have in common agrees, and every field the
-    new config has that the old one lacks is at its dataclass default - the
-    old run was made before that field existed, which is the same thing as
-    the field being at its default. Adding `mask_holidays=False` to Config,
-    for instance, must not throw away a twenty-minute run made without it.
-    """
-    from dataclasses import fields
-
-    want = _config_fields(cfg)
-    code = _method_code(method)
-    defaults = {f.name: repr(f.default) for f in fields(cfg)}
-    folder = cfg.cache_dir / "predictions"
-    if not folder.exists():
-        return None
-    for meta in sorted(folder.glob(f"{method}_*.json")):
-        info = json.loads(meta.read_text())
-        if info.get("code") != code or info.get("method") != method:
-            continue
-        have = info.get("config", {})
-        if any(want[k] != have[k] for k in want.keys() & have.keys()):
-            continue
-        if any(want[k] != defaults.get(k) for k in want.keys() - have.keys()):
-            continue
-        parquet = meta.with_suffix(".parquet")
-        if parquet.exists():
-            return parquet
-    return None
 
 
 def _write_cached(cfg: Config, method: str, frame: pd.DataFrame) -> Path:
@@ -285,11 +247,6 @@ def _read_cached(cfg: Config, method: str) -> pd.DataFrame | None:
     path = _method_cache_path(cfg, method)
     if path.exists() and path.with_suffix(".json").exists():
         return pd.read_parquet(path)
-    adopted = _adopt_cached(cfg, method)
-    if adopted is not None:
-        frame = pd.read_parquet(adopted)
-        _write_cached(cfg, method, frame)  # re-key under this config, once
-        return frame
     return None
 
 

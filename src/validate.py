@@ -278,24 +278,16 @@ def check_features_hand_computed(cfg: Config | None = None) -> dict:
     series = panel[panel["id"] == panel["id"].iloc[0]].sort_values("date")
 
     failures, checked = [], 0
-    for offset, mask in (
-        (7, False),
-        (200, False),
-        (900, False),
-        (150, True),
-        (520, True),
-    ):
-        # several origins, not just the convenient one; two with holiday
-        # masking on, so that code path is recomputed by date as well
+    for offset in (7, 200, 900, 150, 520):
+        # several origins, not just the convenient one
         origin = series["date"].max() - pd.Timedelta(days=offset)
         history = series[series["date"] <= origin]
         targets = series[
             (series["date"] > origin)
             & (series["date"] <= origin + pd.Timedelta(days=cfg.horizon))
         ]
-        feats = build_fold_features(history, targets, origin, mask_holidays=mask)
-        # Days the masked summaries may use: outside the holiday window.
-        usable = history[~holiday_window(history)] if mask else history
+        feats = build_fold_features(history, targets, origin)
+        usable = history
 
         # `sales` is stored as float32 to halve panel memory. The feature code
         # promotes to float64 before doing any arithmetic; this recomputation

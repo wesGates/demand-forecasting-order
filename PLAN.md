@@ -141,7 +141,7 @@ described under "Later, not yet scheduled".
 Per method, per config, cached under `cache/predictions/` with a JSON
 sidecar. Editing one model's module refits that model only. Changing
 `fold_step`, `pool_by` or the item is a new config: every method refits for
-it, once. Adding a config field at its default adopts old runs. Paths are
+it, once. Paths are
 not in the key, so the cache is portable; this folder's `cache/` was copied
 from the parent and holds the step-7 runs (52 and 104 folds).
 

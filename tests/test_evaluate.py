@@ -403,32 +403,3 @@ def test_predictions_cache_is_per_method_and_keyed_on_that_methods_code(
     assert len(list((tmp_path / "predictions").glob("naive_*.parquet"))) == 2
 
 
-def test_predictions_cache_is_adopted_by_a_config_with_a_new_default_field(tmp_path):
-    """
-    A run made before a config field existed is reusable by a config that
-    has the field at its default. Simulated by removing a field from the
-    sidecar and asking for the same run again.
-    """
-    import json
-
-    import src.step5_evaluate as s5
-
-    panel = make_panel()
-    cfg = Config(n_folds=3, min_train_days=200, cache_dir=tmp_path)
-    run_walk_forward(panel, cfg, methods=["mean"], progress=False)
-    meta = next((tmp_path / "predictions").glob("mean_*.json"))
-    info = json.loads(meta.read_text())
-    del info["config"]["mask_holidays"]  # pretend the run predates that field
-    meta.write_text(json.dumps(info))
-    parquet = meta.with_suffix(".parquet")
-    parquet.rename(parquet.with_name("mean_oldkey.parquet"))
-    meta.rename(meta.with_name("mean_oldkey.json"))
-
-    assert s5._adopt_cached(cfg, "mean") is not None
-    assert (
-        s5._adopt_cached(
-            Config(n_folds=3, min_train_days=200, cache_dir=tmp_path, mask_holidays=True),
-            "mean",
-        )
-        is None
-    )

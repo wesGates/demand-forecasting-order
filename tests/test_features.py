@@ -115,21 +115,6 @@ def test_holiday_window_is_two_days_before_to_one_day_after():
     assert list(holiday_window(frame)) == [False, True, True, True, True, False]
 
 
-def test_masked_summaries_skip_the_holiday_window():
-    p = make_panel(n_days=120, stores={"S1": ("CA", 50.0)}, holidays=("2013-04-25",))
-    p = p.sort_values("date").reset_index(drop=True)
-    # Put a spike on the holiday so masking is visible.
-    p.loc[p["date"] == "2013-04-25", "sales"] = 1000.0
-    origin = pd.Timestamp("2013-04-26")  # the day after: inside the window
-    history, targets = _split(p, origin)
-    masked = build_fold_features(history, targets, origin, mask_holidays=True)
-    plain = build_fold_features(history, targets, origin, mask_holidays=False)
-    assert plain["roll_mean_7"].iloc[0] > masked["roll_mean_7"].iloc[0]
-    assert masked["roll_mean_7"].iloc[0] < 100
-    # Lags are left alone - each names one specific day.
-    assert masked["lag_2"].iloc[0] == plain["lag_2"].iloc[0] == 1000.0
-
-
 def test_supervised_matrix_rows_are_leak_free_by_date(series):
     sup = build_supervised(series, horizon=7)
     assert (sup["target_date"] > sup["origin_date"]).all()
