@@ -1,45 +1,37 @@
 """
-Step 4 - Choosing and fitting models (FPP §1.6, step 4).
-
-Everything that produces a forecast lives here, behind one interface:
+Step 4, choosing and fitting models (FPP §1.6). The registry of everything
+that produces a forecast, all behind one interface:
 
     forecaster(ctx: Context) -> np.ndarray of length ctx.horizon
 
-`Context` carries everything a forecaster may legitimately see. Crucially it
-carries **no future information at all** - the target values for the days being
-forecast are not in it, so a benchmark cannot accidentally read the answer. That
-is a deliberate change from the previous build, where a baseline received the
-test frame and one of them quietly indexed into it.
+`Context` holds what a forecaster may see and nothing from after the origin.
+An earlier build handed a baseline the test frame and one of them quietly
+indexed into it. That is the reason for the interface.
 
-Two registries, both flat dicts: adding a method is a function plus an entry.
+Two flat dicts. Adding a method is a function plus an entry.
 
-**Benchmarks** (FPP Ch. 5) are what every model must beat to be interesting.
-All five are here, not one. A single benchmark has already misled this project
-once: seasonal naive predicts one specific past day, so on a noisy series its
-error runs about sqrt(2) worse than simply predicting the mean, and a model that
-predicts near the mean "wins" without any skill at all. The mean-based methods
-are the guard against that.
+Benchmarks (FPP §5.2, plus two of our own) are what a model has to beat.
+See `benchmarks.py` for why there are six.
 
-**Models** are the candidates under test:
+Models under test:
 
-  xgboost   gradient-boosted trees on the supervised feature matrix
-  ets       Holt-Winters exponential smoothing (FPP Ch. 8)
-  arima     seasonal ARIMA with holiday and SNAP regressors (FPP Ch. 9-10)
+  xgboost       gradient-boosted trees on the supervised feature matrix
+  xgboost_rel   the same trees on a level-relative target (item 5)
+  ets           Holt-Winters exponential smoothing (FPP ch. 8)
+  arima         seasonal ARIMA with holiday and SNAP regressors (FPP ch. 9-10)
+  xgboost_q*    quantile-objective trees, kept as item 1's comparator
 
-ETS and ARIMA are the two classical families FPP puts forward, and they are
-not interchangeable here: the ETS implementation takes no regressors, so it
-cannot be told a holiday is coming, while ARIMA can. Keeping both shows what
-the calendar information is worth to a classical model. A plain ARMA is not in
-the set on purpose - it is ARIMA without differencing or a seasonal term, and on
-daily data with a weekly cycle it would need absurd orders to imitate the
-seasonality that one seasonal term captures.
+ETS and ARIMA are the two classical families FPP puts forward. the ETS
+implementation takes no regressors, so it cannot be told a holiday is
+coming, while ARIMA can. Keeping both shows what the calendar information is
+worth to a classical model. A plain ARMA is left out on purpose. It is ARIMA
+without differencing or a seasonal term, and on daily data with a weekly
+cycle it would need very high orders to imitate what one seasonal term does.
 
-**Pooling is not a model - it is a training scope**, and it lives on
-`Config.pool_by`. "XGBoost per store" and "XGBoost pooled across stores" are the
-same function with the same features; the only difference is which rows step 5
-puts into `Context.train_pool`, and whether the model is handed series identity
-to tell them apart. Keeping that on one switch is what isolates the
-cross-learning question to a single variable.
+Pooling is a training scope rather than a model, and it lives on
+`Config.pool_by`. Per-store and pooled XGBoost are the same function with
+the same features. The only difference is which rows step 5 puts into
+`Context.train_pool` and whether the model is given the store identity.
 """
 
 from __future__ import annotations
@@ -71,12 +63,12 @@ MODELS: dict[str, Forecaster] = {
     **xgboost_quantile.QUANTILE_MODELS,
 }
 
-# Everything that produces a forecast, benchmarks and models alike.
+# Everything that produces a forecast, benchmarks and models together.
 ALL_FORECASTERS: dict[str, Forecaster] = {**BENCHMARKS, **MODELS}
 
-# Which module each method's code lives in. The predictions cache is keyed
-# per method on the code of *that* module (plus the shared base and harness),
-# so editing XGBoost does not throw away a cached ARIMA run.
+# Which module each method lives in. The predictions cache hashes that
+# module (plus the shared base, harness, features, loader and Config), so
+# editing XGBoost keeps the cached ARIMA run. That one takes 10 min.
 MODULE_OF = {
     **{name: benchmarks for name in BENCHMARKS},
     "xgboost": xgboost_model,
@@ -89,9 +81,10 @@ MODULE_OF = {
 
 def reset_run_state() -> None:
     """
-    Forget everything memoised within a run: ARIMA's chosen orders and the
-    quantile model's per-fold fits. The harness calls this at the start of
-    every run so a second layout in the same process starts clean.
+    Forget everything memoised within a run: ARIMA's chosen orders, the
+    pooled fits and the quantile model's per-fold fits. The harness calls
+    this at the start of every run so a second layout in the same process
+    starts clean.
     """
     arima_orders.clear()
     xgboost_quantile.reset()

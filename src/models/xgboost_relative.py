@@ -1,21 +1,25 @@
 """
 Gradient-boosted trees on a level-relative target.
 
-Item 4 showed why a tree model loses on a declining item: it predicts from
-leaves grown on the levels it trained on and cannot extrapolate below them,
-so as sales fall its forecast stays where the history was. Exponential
-smoothing tracks the level by construction.
+Same features and settings as the point model. The target changes to sales
+minus the 28-day mean at the origin, and that mean is added back at
+prediction time.
 
-This variant keeps every feature and every setting of the point model and
-changes only what the trees are asked to predict: the target is the day's
-sales *minus the 28-day mean at the origin* (a feature the row already
-carries), and the forecast is the prediction plus that same mean. The
-trees then learn the weekly and holiday shape around the recent level, and
-the level itself is carried by the most recent four weeks - which is what a
-moving average does, and what the trees could not.
+The "level" of a series is its recent average, how much it sells per day
+right now. A tree model has no idea of level. It predicts from leaves grown
+on the values it saw in training, so it cannot predict a value below the
+lowest one it trained on. Item 4 showed that on the declining item
+FOODS_1_021 the plain trees ran 60% high because the level kept falling out
+from under them. Exponential smoothing carries a level state that updates
+with every new day (FPP §8.1), wich is why ETS did not have the problem.
 
-Per-store and pooled variants follow the point model exactly, including the
-one-fit-per-origin memo for the pooled case.
+Here the 28-day mean carries the level. It is a feature the row already
+has, computed at the row's own origin, so training and prediction use the
+same anchor and nothing from after the origin gets in. The trees only have
+to learn the weekly and holiday shape around it.
+
+The per-store and pooled variants work exactly like the point model's,
+including the one-fit-per-origin memo when pooled.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ def reset() -> None:
 
 
 def fit_predict_xgboost_relative(ctx: Context, **overrides) -> np.ndarray:
-    """The point model's trees, trained on sales minus the origin's 28-day mean."""
+    """The point model's trees, fitted to sales minus the 28-day mean at the origin."""
     parts = design(ctx)
     if parts is None:
         return np.full(ctx.horizon, np.nan)

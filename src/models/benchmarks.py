@@ -1,11 +1,11 @@
 """
-Benchmarks - FPP Ch. 5. What every model must beat to be interesting.
+The benchmarks from FPP §5.2, plus two of our own. A model has to beat these
+before it is worth talking about.
 
-All six are here, not one. A single benchmark has already misled this project
-once: seasonal naive predicts one specific past day, so on a noisy series its
-error runs about sqrt(2) worse than simply predicting the mean, and a model
-that predicts near the mean "wins" without any skill at all. The mean-based
-methods are the guard against that.
+Six benchmarks because one misled this project early on. The seasonal naive
+predicts from a single past day, so on a noisy series its error runs about
+sqrt(2) higher than predicting the mean, and a model that sits near the mean
+beats it with no skill at all. The mean-based ones are here to catch that.
 """
 
 from __future__ import annotations
@@ -17,51 +17,42 @@ from src.models.base import Context, Forecaster, _flat
 
 def bench_mean(ctx: Context) -> np.ndarray:
     """
-    Mean method: the average of all history.
-
-    FPP §5.2. Unbeatable-looking on a stationary series and hopeless on a
-    trending one, which is precisely why it belongs alongside the others.
+    The mean method (FPP §5.2). The average of the whole history, repeated.
+    Strong on a flat series and hopeless on a trending one.
     """
     return _flat(ctx.y.mean(), ctx)
 
 
 def bench_naive(ctx: Context) -> np.ndarray:
     """
-    Naive method: the last observed value, repeated.
-
-    FPP §5.2, `ŷ_{T+h|T} = y_T`. Optimal for a random walk, and the benchmark
-    any forecast of a genuinely unpredictable series should be measured against.
+    The naive method (FPP §5.2). The last value, repeated. This is the best
+    you can do on a random walk.
     """
     return _flat(ctx.y[-1], ctx)
 
 
 def bench_seasonal_naive(ctx: Context) -> np.ndarray:
     """
-    Seasonal naive: the value from the same weekday in the most recent week.
+    The seasonal naive (FPP §5.2). The same weekday from the most recent
+    week. This is what an orderer's default screen shows, "this day last
+    week", so it is the reference benchmark for the whole study.
 
-    FPP §5.2. Captures the weekly pattern for free and is what a person with no
-    tools would do.
-
-    Its weakness is the reason this project reports six benchmarks: it stakes
-    everything on one specific past day, so its error carries that day's noise
-    *plus* the target's. On a noisy series that is roughly sqrt(2) worse than
-    predicting the mean, and a model can beat it by being sensibly dull.
+    Its error carries that one day's noise on top of the target's noise, which
+    is why a dull model can beat it and why the mean-based benchmarks sit
+    beside it.
     """
     y, s = ctx.y, ctx.season
     if len(y) < s:
         return _flat(y[-1], ctx)
-    # h = 1..horizon maps back to the matching day of the last complete cycle.
+    # Day h ahead maps back to the matching day of the last complete week.
     idx = [-s + ((h - 1) % s) for h in range(1, ctx.horizon + 1)]
     return y[idx]
 
 
 def bench_drift(ctx: Context) -> np.ndarray:
     """
-    Drift method: the last value, extrapolated along the average historical
-    slope.
-
-    FPP §5.2. Equivalent to drawing a straight line through the first and last
-    observations and continuing it - a naive forecast that is allowed a trend.
+    The drift method (FPP §5.2). A straight line through the first and last
+    observations, continued forward. The naive forecast with a trend allowed.
     """
     y = ctx.y
     if len(y) < 2:
@@ -72,30 +63,20 @@ def bench_drift(ctx: Context) -> np.ndarray:
 
 def bench_moving_average(ctx: Context, window: int = 28) -> np.ndarray:
     """
-    Flat forecast at the mean of the last `window` days.
-
-    Not one of FPP's four, and included because it is the one that matters. It
-    tracks the recent level rather than the whole history, and on this kind of
-    data it is a genuinely hard benchmark to beat - a previous version of this
-    project found a supposed 75% win rate collapse to 42% when measured against
-    it instead of seasonal naive.
+    A flat forecast at the mean of the last `window` days. Not one of FPP's
+    four. It follows the recent level and is the hardest benchmark here. An
+    earlier version of this project claimed a 75% win rate against the
+    seasonal naive that fell to 42% against this one.
     """
     return _flat(ctx.y[-window:].mean(), ctx)
 
 
 def bench_seasonal_naive_364(ctx: Context) -> np.ndarray:
     """
-    Seasonal naive with a one-year period: the same weekday, 52 weeks ago.
-
-    The weekly seasonal naive is what an orderer's default screen shows - this
-    day last week. Before a holiday an experienced orderer switches to *this
-    day last year*, and that is what this benchmark encodes. Lag 364 rather
-    than 365 keeps the weekday aligned (FPP §13.1 on annual periods in daily
-    data). Falls back to the weekly version when a year of history is not yet
-    available, so the two benchmarks are identical on short series.
-
-    Included so that the holiday-week comparison is against what a good orderer
-    actually does, not only against the default screen.
+    The seasonal naive with a one-year period. The same weekday 52 weeks ago,
+    which is what an experienced orderer looks at before a holiday. Lag 364
+    keeps the weekday aligned (FPP §13.1 covers annual periods in daily data).
+    Falls back to the weekly version until a year of history exists.
     """
     y = ctx.y
     lag = 52 * ctx.season

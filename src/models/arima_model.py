@@ -1,4 +1,4 @@
-"""Seasonal ARIMA with calendar regressors (FPP Ch. 9, and Ch. 10 for the regressors)."""
+"""Seasonal ARIMA with calendar regressors (FPP ch. 9; ch. 10 for the regressors)."""
 
 from __future__ import annotations
 
@@ -9,27 +9,27 @@ import pandas as pd
 
 from src.models.base import Context, _flat, note_fallback
 
-# Regressors handed to ARIMA. All are known in advance for any target date, so
-# they are legitimate predictors in FPP's sense (§10.1). `pre_holiday` is the
-# two-day run-up the event-effect table shows for this item.
+# The regressors ARIMA gets. All three are known in advance for any target
+# date, which makes them fair predictors (FPP §10.1). `pre_holiday` is the
+# two-day run-up the event-effect table showed for this item.
 ARIMA_EXOG = ("is_holiday", "pre_holiday", "snap")
 
-# The differencing is fixed, not searched: no ordinary difference (the series
-# is level-stationary over two years) and one seasonal difference at lag 7.
-# FPP §9.7 is explicit that information criteria cannot compare models with
-# different orders of differencing, so only the AR and MA orders are chosen.
+# The differencing is fixed. No ordinary difference, because the series is
+# level-stationary over a two-year window, and one seasonal difference at
+# lag 7. FPP §9.7 says information criteria cannot compare models with
+# different differencing, so the grid searches only the AR and MA orders.
 ARIMA_D, ARIMA_SEASONAL_D = 0, 1
 ARIMA_GRID = [
     (p, q, P, Q) for p in (0, 1, 2) for q in (0, 1, 2) for P in (0, 1) for Q in (0, 1)
 ]
 ARIMA_FIT_DAYS = 730
 
-# Chosen orders, one per series, filled on the first fold each series is
-# forecast in a run and reused for the rest of that run. The harness walks
-# folds oldest first, so the selection is made on the earliest training
-# window and never sees a scored day - and `run_walk_forward` clears this at
-# the start of every run, so a second layout in the same process selects
-# afresh on its own first window.
+# One chosen order per series, picked on the series' first scored window and
+# held for the rest of the run. The grid search takes about 24 s per series,
+# so doing it once per fold would have turned a 10 min run into hours. The
+# harness picks the orders before the folds start and clears this dict at
+# the start of every run, so a second layout in the same process starts
+# fresh.
 arima_orders: dict[
     str, tuple[tuple[int, int, int], tuple[int, int, int, int], float]
 ] = {}
@@ -44,7 +44,7 @@ def _arima_exog(frame: pd.DataFrame) -> np.ndarray:
 
 
 def _select_arima_order(y: np.ndarray, exog: np.ndarray, season: int):
-    """AICc over ARIMA_GRID at fixed differencing. Returns (order, seasonal_order, aicc)."""
+    """The lowest-AICc order in ARIMA_GRID. Returns (order, seasonal_order, aicc)."""
     from statsmodels.tsa.statespace.sarimax import SARIMAX
 
     best = None
@@ -70,21 +70,16 @@ def _select_arima_order(y: np.ndarray, exog: np.ndarray, season: int):
 
 def fit_predict_arima(ctx: Context) -> np.ndarray:
     """
-    Seasonal ARIMA with regressors (FPP Ch. 9, and Ch. 10 for the regressors).
+    Seasonal ARIMA with regressors (FPP ch. 9; ch. 10 for the regressors).
 
-    The classical model that *can* be told about the calendar. It is given the
-    same known-in-advance information XGBoost gets - a holiday flag, a
-    pre-holiday flag and the SNAP flag - so the comparison between the two is
-    about the modelling, not about who was allowed to see the calendar.
+    The classical model that can be told about the calendar. It gets the same
+    known-in-advance flags XGBoost gets (holiday, pre-holiday, SNAP), so the
+    two are compared on modelling and not on who saw the calendar.
 
-    Fitted on the most recent two years, like ETS and for the same reason. The
-    order is selected once per series by AICc on that series' first training
-    window and then held fixed across folds: re-selecting on every fold would
-    multiply the run time by the grid size and make fold-to-fold differences
-    partly about which order happened to win.
+    Fitted on the last two years, like ETS. The order is chosen once per
+    series by AICc and held across folds; see `arima_orders` for why.
 
-    Fallback and warning follow ETS's pattern: a failed fit gives the 28-day
-    mean, and says so.
+    A failed fit returns the 28-day mean, warns, and notes the fallback.
     """
     from statsmodels.tsa.statespace.sarimax import SARIMAX
 

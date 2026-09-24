@@ -1,4 +1,4 @@
-"""Holt-Winters exponential smoothing with weekly seasonality (FPP Ch. 8)."""
+"""Holt-Winters exponential smoothing with a weekly season (FPP ch. 8)."""
 
 from __future__ import annotations
 
@@ -11,22 +11,20 @@ from src.models.base import Context, _flat, note_fallback
 
 def fit_predict_ets(ctx: Context) -> np.ndarray:
     """
-    Holt-Winters exponential smoothing with weekly seasonality (FPP Ch. 8).
+    Holt-Winters exponential smoothing with a weekly season (FPP ch. 8).
 
-    A real classical contender rather than a benchmark: a weighted average of
-    the past where the weights decay exponentially, extended to carry a trend
-    and a repeating weekly shape. On a smooth, strongly seasonal series it is
-    often very hard to beat, which is exactly the case this study is about.
+    A weighted average of the past with the weights decaying exponentially,
+    plus a trend and a repeating weekly shape. Hard to beat on a smooth,
+    seasonal series, which is the kind this study started with.
 
-    Fitted on the most recent two years only. ETS weights recent observations
-    most heavily anyway, and the full five years both slows the optimiser and
-    drags the fitted seasonal shape toward a level the series left behind -
-    step 3 showed a clear multi-year downward drift.
+    Fitted on the last two years only. The full five years slowed the
+    optimiser and pulled the seasonal shape toward a level the series had
+    left behind (step 3 found a multi-year downward drift), so the fit
+    window was cut to 730 days.
 
-    If the optimiser fails, the forecast falls back to the 28-day mean and a
-    warning names the series and origin. The fallback keeps a single bad fold
-    from aborting a whole run; the warning keeps it from hiding - a silent
-    fallback would let "ETS diverged every time" masquerade as "ETS is weak".
+    A failed fit returns the 28-day mean, warns with the series and origin,
+    and notes the fallback so the harness can count it. Without the note a
+    run where ETS diverged on every fold would look like ETS being weak.
     """
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
