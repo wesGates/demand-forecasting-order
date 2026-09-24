@@ -1,56 +1,30 @@
 """
-Step 5 - Using and evaluating the forecasts (FPP §1.6, step 5).
+Step 5. The harness. It walks every series through every fold, asks each
+forecaster for its forecast and records what actually sold. Every table and
+plot downstream comes from the one long table `run_walk_forward` returns.
 
-This is the harness. It walks every series through every fold, asks every
-forecaster for its forecast, and records what actually happened. Everything
-reported afterwards - RMSSE tables, win rates, the plots - derives from the one
-long table `run_walk_forward` returns, so there is exactly one place where a
-forecast meets an actual.
+Walk-forward validation (FPP §5.10). A fold is a forecast origin T plus the
+`test_window` days after it. No forecaster sees anything after T. The Context
+carries no future sales, and the learned models train only on rows whose
+target date is at or before T.
 
-**Walk-forward validation** (FPP §5.10, "time series cross-validation"). The
-folds come from `Config.fold_origins`: each is a forecast origin T, and the
-`test_window` days after it are scored. Nothing after T is visible to any
-forecaster - `Context` carries no future sales, and the learned model's
-training rows are filtered by `target_date <= T` in step 4. The folds tile the
-held-out period end to end, so the scored days are exactly the ones step 3's
-classification never saw.
+RMSSE (FPP §5.8). The forecast's RMSE divided by the RMSE of a lag-`season`
+naive forecast on the training data. 1.0 means no better than repeating the
+value from a week ago, 0.8 means 20% better. The denominator belongs to the
+series, which makes stores of very different size comparable. Within one
+series-fold every method shares the denominator, so RMSSE never changes which
+method wins a fold, only how folds and stores get aggregated. RMSE, MAE and
+bias stay in the table as the plain-units view. Bias is mean(forecast - actual)
+and matters on its own for replenishment.
 
-**RMSSE** (FPP §5.8). Root mean squared *scaled* error: the forecast's RMSE
-divided by the RMSE a naive forecast would have had on the training data.
+Two kinds of week. Every score is also split into normal and holiday folds. A
+fold is a holiday fold when one of its scored days falls from two days before a
+major event to one day after. Both columns get reported, always. A pooled number
+cannot say whether a method's advantage came from the ordinary weeks or from the
+handful the calendar decides.
 
-    RMSSE = RMSE(forecast) / sqrt( mean( (y_t - y_{t-lag})^2 ) over training )
-
-A value of 1.0 means "as good as naively repeating the value from `lag` days
-ago"; 0.8 means 20% better. Because the denominator is a property of the series
-and not of the forecast, RMSSE is comparable across stores of very different
-size - a 5-unit error means something different at 100 units/day than at 15.
-
-Two details are `Config` decisions, and the config comments say why:
-`rmsse_scale_lag` (FPP says `season` for seasonal data; M5 used 1) and
-`rmsse_scale_window` ("pre_holdout": one denominator per series over all
-training data before the first scored day, shared by every fold and method).
-
-A property worth having straight: within one series-fold every method shares
-the same denominator, so RMSSE **never changes which method wins that fold** -
-it is a rescaling of RMSE. What it changes is how you aggregate across stores.
-
-RMSE, MAE and bias are kept alongside as the plain-units view. Bias is
-`mean(forecast - actual)`: positive means over-forecasting, and it matters in
-its own right for replenishment, where a consistent 5% under-forecast is worse
-than noisy-but-centred.
-
-**Two kinds of week.** Every score is also reported split into *normal* and
-*holiday* folds. A fold is a holiday fold if any of its scored days falls in
-the window from two days before a major event to one day after it - the
-run-up and the hangover the event-effect table shows. The split is not there
-to hide holidays; it is there because a single pooled number cannot say
-whether a method's advantage comes from the fifty ordinary weeks or from the
-handful where the calendar does the work. Both columns are reported, always.
-
-**Closure days are not scored.** Step 2 flags the days the stores were shut
-and imputes their sales so the following week's features are sane. Those days
-are still in `predictions` (so a forecast plot shows them) but `score_folds`
-drops them: forecasting a locked door is not a demand question.
+Closure days are not scored. Step 2 imputes them to keep the following week's
+features sane, and `score_folds` drops them.
 """
 
 from __future__ import annotations
@@ -79,17 +53,17 @@ from src.step4_models import ALL_FORECASTERS, BENCHMARKS, Context, reset_run_sta
 
 
 def _supervised_path(cfg: Config, series_id: str, extent: tuple = ()):
-    # The panel version is in the key too: a loader change (closure imputation
-    # was one) changes the sales the lags and targets are built from, and a
-    # matrix built from the old panel must not be served for the new one.
+    # The panel version goes in the key as well. A loader change alters the
+    # sales the lags and targets come from, and a matrix built on the old
+    # panel must not be served for the new one.
     key = repr(
         (
             FEATURE_VERSION,
-            step2_data.CACHE_VERSION,  # via the module, so a bump is always seen
+            step2_data.CACHE_VERSION,  # read through the module so a bump is always seen
             series_id,
             cfg.horizon,
             cfg.use_price,
-            extent,  # first day, last day, rows: new days must rebuild the matrix
+            extent,  # first day, last day, row count. New days rebuild the matrix
         )
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
@@ -100,9 +74,9 @@ def supervised_matrices(df: pd.DataFrame, cfg: Config) -> dict[str, pd.DataFrame
     """
     One supervised matrix per series, built once and cached to parquet.
 
-    Building takes ~8s per series; reading back takes well under a second. The
-    cache key includes `FEATURE_VERSION`, so editing a feature and forgetting
-    to rebuild cannot serve stale rows - the old file simply stops matching.
+    Building takes about 8 s per series, reading back well under a second. The
+    key includes FEATURE_VERSION and the series' extent, so an edited feature or
+    an extra day of data rebuilds the matrix instead of serving stale rows.
     """
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
     out = {}
@@ -131,12 +105,11 @@ def supervised_matrices(df: pd.DataFrame, cfg: Config) -> dict[str, pd.DataFrame
 
 def naive_scale(y, lag: int) -> float:
     """
-    RMSE of a lag-`lag` naive forecast over the given values - the RMSSE
-    denominator of FPP §5.8, in its squared-error form.
+    RMSE of a lag-`lag` naive forecast over the values given. This is the RMSSE
+    denominator of FPP §5.8 in its squared form.
 
-    Returns NaN if there is nothing to difference. A series that never changes
-    has a zero denominator; that is left as 0 so the resulting RMSSE is `inf`
-    and visibly wrong, rather than silently replaced.
+    Returns NaN when there is nothing to difference. A series that never changes
+    gives 0. Scoring treats both cases as unscored folds.
     """
     y = np.asarray(y, dtype=float)
     if len(y) <= lag:
@@ -149,10 +122,10 @@ def naive_scale(y, lag: int) -> float:
 # Holiday weeks
 # --------------------------------------------------------------------------- #
 
-# The holiday-affected window is defined once, in features.py, and shared: the
-# feature masking and the normal/holiday fold split must mean the same days.
-# From the event-effect table (step 3): the two days before Christmas and
-# Thanksgiving run 20-70% above baseline, and the day after is still elevated.
+# The holiday window is defined once in features.py and shared with the
+# normal/holiday fold split, so both mean the same days. From the event-effect
+# table in step 3, the two days before Christmas and Thanksgiving run 20-70%
+# above baseline and the day after is still high.
 
 
 # --------------------------------------------------------------------------- #
@@ -161,7 +134,7 @@ def naive_scale(y, lag: int) -> float:
 
 
 def _code_digest(path: Path) -> str:
-    """SHA-1 of a module's syntax tree with docstrings removed - the code, not the prose."""
+    """SHA-1 of a module's syntax tree with the docstrings removed. Comments and docstrings can change without touching the cache."""
     tree = ast.parse(path.read_text())
     for node in ast.walk(tree):
         if isinstance(
@@ -178,8 +151,8 @@ def _code_digest(path: Path) -> str:
     return hashlib.sha1(ast.dump(tree).encode()).hexdigest()
 
 
-# Config fields that do not change a forecast: where the files live. Leaving
-# them out of the key makes a cache portable between folders and machines.
+# Config fields that do not change a forecast, only where the files live.
+# Leaving them out of the key keeps a cache portable between folders and machines.
 _PATH_FIELDS = ("data_dir", "cache_dir")
 
 
@@ -190,20 +163,18 @@ def _config_fields(cfg: Config) -> dict[str, str]:
 
 def _method_code(method: str) -> str:
     """
-    Digest of the code a method's predictions depend on: the harness, the
-    shared base (Context and helpers), the features and loader versions, and
-    the module that method lives in. Editing one model's module changes only
-    that method's digest, so the others' cached predictions stay valid.
+    The digest of the code that a method's forecasts depend on. The harness,
+    shared base, the method's own module, features, loader and Config all go in
+    here. If one model is edited, only that model refits.
     """
     from src import features, step4_models
     from src.models import base
 
-    # The feature and loader modules are hashed too, not only their manual
-    # version numbers: an edit to either changes what a model trains on, and
-    # a forgotten version bump must not serve a stale run.
+    # The feature and loader modules are hashed as well as their version
+    # numbers. A forgotten version bump then cannot serve a stale run.
     parts = [
         _code_digest(Path(__file__)),
-        _code_digest(Path(step1_problem.__file__)),  # fold layout, holdout, scale window
+        _code_digest(Path(step1_problem.__file__)),  # fold layout, holdout, scale window. Known mistake: missing until item 8
         _code_digest(Path(base.__file__)),
         _code_digest(Path(step4_models.MODULE_OF[method].__file__)),
         _code_digest(Path(features.__file__)),
@@ -216,8 +187,8 @@ def _method_code(method: str) -> str:
 
 def _method_cache_path(cfg: Config, method: str) -> Path:
     """
-    One parquet per (config, method, code) under cache/predictions/, with a
-    JSON sidecar recording the config fields it was built from.
+    One parquet per (config, method, code) under cache/predictions, with a JSON
+    sidecar that records the config it was built from.
     """
     key = repr((_config_fields(cfg), method, _method_code(method)))
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
@@ -229,7 +200,7 @@ def _write_cached(cfg: Config, method: str, frame: pd.DataFrame) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     frame.to_parquet(tmp, index=False)
-    tmp.replace(path)  # atomic: a kill mid-write leaves no half file behind
+    tmp.replace(path)  # write to a temp file and rename. A kill mid-write leaves no half file
     path.with_suffix(".json").write_text(
         json.dumps(
             {
@@ -261,26 +232,22 @@ def run_walk_forward(
     """
     Every forecast from every method for every series-fold, with the actuals.
 
-    Returns one row per (series, fold, method, horizon day) with columns
-    `actual`, `forecast` and `scale` (the RMSSE denominator that applies to
-    that series-fold). This long table is the single source every score and
-    plot is computed from.
+    One row per (series, fold, method, horizon day), with `actual`, `forecast`
+    and `scale` (the RMSSE denominator for that series-fold). Every score and
+    plot is computed from this table.
 
-    `methods` defaults to every benchmark and every model. Pass a subset to
-    iterate on one method quickly.
+    `methods` defaults to every benchmark and model. Pass a subset while
+    iterating on one method.
 
-    A full run takes on the order of twenty minutes on the step-7 layout
-    (ARIMA is the slow one) and about seven times that on step 1, so each
-    method's predictions are cached to parquet under a key that includes the
-    config and the code that method depends on - see `_method_cache_path`.
-    A method whose code has not changed is served from cache while the others
-    are refitted. `use_cache=False` forces a full rerun.
+    Each method's forecasts are cached under a key made of the config and the
+    code the method depends on (see `_method_cache_path`). A method whose code
+    has not changed loads from the cache while the others refit.
+    `use_cache=False` forces a full rerun.
 
-    `n_jobs` is how many fits run at once, in separate processes, one thread
-    each (default: every core). It changes wall time only: every fit is
-    single-threaded whatever `n_jobs` is, so the forecasts are the same for
-    any value, and the same on any machine with the same library versions.
-    Parallelism is therefore not part of the cache key.
+    `n_jobs` is how many fits run at once, in separate processes with one
+    thread each. The default is every core. It changes wall time only. The
+    forecasts are the same for any value and on any machine with the same
+    library versions, which is why it is not part of the cache key.
     """
     methods = list(methods or ALL_FORECASTERS)
     unknown = set(methods) - set(ALL_FORECASTERS)
@@ -289,8 +256,8 @@ def run_walk_forward(
             f"unknown method(s) {sorted(unknown)}; choose from {list(ALL_FORECASTERS)}"
         )
 
-    # One cache file per method. Only the methods without a valid file are
-    # fitted, so editing XGBoost does not refit ARIMA.
+    # One cache file per method. Only methods without a valid file get fitted.
+    # editing XGBoost does not refit ARIMA.
     cached: dict[str, pd.DataFrame] = {}
     if use_cache:
         for name in methods:
@@ -303,20 +270,20 @@ def run_walk_forward(
     if not to_run:
         return _ordered(cached, methods)
 
-    # ARIMA memoises its chosen order per series on the first fold it sees,
-    # and the tree models memoise fits per fold or per origin. All of it must
-    # belong to *this* run: a second layout in the same process would
-    # otherwise inherit state from a window that may reach into its own
-    # scored period. Workers reset per task; the parent resets here.
+    # ARIMA memoises its chosen order per series and the tree models memoise
+    # fits per fold or origin. All of that has to belong to this run. A second
+    # layout in the same process would otherwise inherit state from a window
+    # that reaches into its own scored period. Workers reset per task, the
+    # parent resets here.
     reset_run_state()
 
     state = _run_state(df, cfg, to_run)
     n_jobs = max(1, n_jobs or os.cpu_count() or 1)
 
-    # ARIMA's order is chosen once per series, on that series' first scored
-    # window, and held for the year. With folds spread over processes that
-    # choice has to be made first and handed to every worker, or each would
-    # choose its own on whatever window it saw first.
+    # ARIMA chooses its order once per series on the first scored window and
+    # keeps it for the year. With folds spread over processes that choice gets
+    # made first and handed to every worker. Otherwise each worker would choose
+    # on whatever window it saw first.
     if "arima" in to_run:
         state["arima_orders"] = _select_arima_orders(state, n_jobs, progress)
 
@@ -326,8 +293,8 @@ def run_walk_forward(
         rows.extend(chunk)
 
     global _STATE
-    _STATE = {}  # the in-process path leaves the state behind otherwise
-    fresh = pd.DataFrame(rows, columns=ROW_COLUMNS)  # empty when every fold was skipped
+    _STATE = {}  # the in-process path would leave the whole state in memory otherwise
+    fresh = pd.DataFrame(rows, columns=ROW_COLUMNS)  # empty frame when every fold was skipped
     for name in to_run:
         part = (
             fresh[fresh["method"] == name]
@@ -344,12 +311,12 @@ def run_walk_forward(
 # The work, split into tasks that run in parallel
 # --------------------------------------------------------------------------- #
 #
-# A task is one fold of one series when models fit per series, or one fold of
-# every series when they pool: a pooled model is fitted once per origin and
-# shared by the ten stores, so the ten have to sit in the same process. Each
-# task rebuilds exactly the Context the serial loop built, calls every method
-# in `to_run` on it, and returns the rows. Nothing is shared between tasks
-# except the read-only state handed to each worker at start-up.
+# A task is one fold of one series when models fit per series. When they pool
+# it is one fold of every series, because a pooled model is fitted once per
+# origin and shared by the ten stores, and the ten have to sit in the same
+# process. Each task rebuilds the Context the old serial loop built, calls every
+# method in `to_run` on it and returns the rows. Tasks share nothing but the
+# read-only state handed to each worker at start-up.
 
 _STATE: dict = {}
 
@@ -362,10 +329,11 @@ ROW_COLUMNS = [
 
 def _check_actuals(df: pd.DataFrame, cached: dict[str, pd.DataFrame]) -> None:
     """
-    A cached run must describe the data on disk now. The key names the
-    configuration and the code, not the data, so a changed data file (or a
-    cache copied next to different data) would otherwise be served without
-    a word. The actuals in the cache and the panel's sales must agree.
+    A cached run has to match the data on disk. The key covers the config and
+    the code but says nothing about the data, and a changed data file would get
+    old forecasts served back with no complaint. This compares the cached
+    actuals with the panel's sales and stops the run with an error if they
+    differ anywhere.
     """
     sales = df.set_index(["id", "date"])["sales"]
     for name, frame in cached.items():
@@ -396,8 +364,8 @@ def _run_state(df: pd.DataFrame, cfg: Config, to_run: list[str]) -> dict:
     for series_id, frame in df.groupby("id", sort=True, observed=True):
         frame = frame.sort_values("date").reset_index(drop=True)
         series[series_id] = frame
-        # The rows a learned model may train on: this series alone, or every
-        # series that shares its pool key. Which is `Config.pool_by`'s decision.
+        # The rows a learned model may train on. This series alone, or every
+        # series that shares its pool key. `Config.pool_by` decides.
         if cfg.pool_by is None:
             pools[series_id] = matrices[series_id]
         else:
@@ -408,8 +376,8 @@ def _run_state(df: pd.DataFrame, cfg: Config, to_run: list[str]) -> dict:
                     [matrices[m] for m in members], ignore_index=True
                 )
             pools[series_id] = shared_pools[key]
-        # "pre_holdout": one denominator for this series, from everything
-        # before the first scored day. Shared by every fold and every method.
+        # "pre_holdout" means one denominator per series, from everything before
+        # the first scored day, shared by every fold and method.
         scales[series_id] = naive_scale(
             frame.loc[frame["date"] < holdout, "sales"], cfg.rmsse_scale_lag
         )
@@ -427,6 +395,7 @@ def _run_state(df: pd.DataFrame, cfg: Config, to_run: list[str]) -> dict:
 
 
 def _tasks(state: dict) -> list[tuple]:
+    """One task per (series, fold), or one per fold when the models pool."""
     cfg = state["cfg"]
     folds = range(len(state["origins"]))
     if cfg.pool_by is None:
@@ -436,19 +405,19 @@ def _tasks(state: dict) -> list[tuple]:
 
 def _init_worker(state: dict, pin: bool = True) -> None:
     """
-    Runs once per worker process: take the state and pin every numerical
-    library to one thread. The environment variables catch libraries not yet
-    loaded (XGBoost imports lazily, and its OpenMP pool reads them at load);
-    `threadpool_limits` catches the ones already loaded. Both are needed:
-    with twenty workers each spawning twenty OpenMP threads, the machine ran
-    four hundred busy-waiting threads and crawled.
+    Runs once per worker. Pin every numeric library to one thread before
+    XGBoost loads, because XGBoost picks its thread count at import. The
+    environment variables cover libraries not loaded yet, `threadpool_limits`
+    covers the ones already loaded.
+    - Known mistake: pinning after the import. Twenty workers x twenty threads,
+      load average 200, a 10 min gate still running after 40 min. lol
     """
     global _STATE
     _STATE = state
-    if pin:  # a worker process: pin for its whole life
+    if pin:  # a worker process, pinned for its whole life
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[var] = "1"
-        import xgboost  # noqa: F401  - load it now, under the limit
+        import xgboost  # noqa: F401  - load it now, while the limit is in place
         from threadpoolctl import threadpool_limits
 
         threadpool_limits(limits=1)
@@ -459,7 +428,7 @@ def _init_worker(state: dict, pin: bool = True) -> None:
 
 
 def _fold_context(series_id: str, fold: int, state: dict):
-    """The Context and scoring metadata for one fold of one series, or None if it is not scored."""
+    """The Context and scoring metadata for one fold of one series. None when the fold is not scored."""
     cfg = state["cfg"]
     series = state["series"][series_id]
     origin = state["origins"][fold]
@@ -501,6 +470,10 @@ def _fold_context(series_id: str, fold: int, state: dict):
 
 
 def _forecast_rows(ctx: Context, meta: dict, to_run: list[str]) -> list[dict]:
+    """
+    Call every method on one fold and return one row per forecast day. A
+    method that fell back to the 28-day mean is flagged on all of its rows.
+    """
     rows = []
     for name in to_run:
         base.fallbacks.clear()
@@ -536,8 +509,8 @@ def _forecast_task(task: tuple) -> list[dict]:
     """One task: a fold of one series, or (pooled) a fold of every series."""
     from src.models import xgboost_model, xgboost_quantile, xgboost_relative
 
-    # Per-fold and per-origin memos belong to this task only: a fresh task
-    # must never reuse a fit, and a long-lived worker must not hoard them.
+    # Per-fold and per-origin memos belong to this task only. A fresh task must
+    # never reuse a fit and a long-lived worker must not hoard them.
     xgboost_model.reset()
     xgboost_quantile.reset()
     xgboost_relative.reset()
@@ -556,7 +529,7 @@ def _forecast_task(task: tuple) -> list[dict]:
 
 
 def _first_arima_order(series_id: str):
-    """Choose ARIMA's order for one series on its first scored window, as the serial loop did."""
+    """Choose the ARIMA order for one series on its first scored window, as the old serial loop did."""
     from src.models import arima_model
 
     state = _STATE
@@ -572,6 +545,7 @@ def _first_arima_order(series_id: str):
 
 
 def _select_arima_orders(state: dict, n_jobs: int, progress: bool) -> dict:
+    """Choose the ARIMA order for every series before the folds run. Fails if a series with scored folds got none."""
     orders = {}
     for sid, order, scored in _map(state, _first_arima_order, state["ids"], n_jobs, progress, desc="arima orders"):
         if scored and order is None:
@@ -585,13 +559,13 @@ def _select_arima_orders(state: dict, n_jobs: int, progress: bool) -> dict:
 
 
 def _map(state: dict, fn, items: list, n_jobs: int, progress: bool, desc: str):
-    """Apply `fn` to `items` in order, in `n_jobs` worker processes (or in-process when 1)."""
+    """Apply `fn` to `items` in order, in `n_jobs` worker processes, or in-process when n_jobs is 1."""
     n_jobs = min(n_jobs, max(1, len(items)))
     if n_jobs == 1:
         from threadpoolctl import threadpool_limits
 
         _init_worker(state, pin=False)
-        with threadpool_limits(limits=1):  # for the duration of the run only
+        with threadpool_limits(limits=1):  # only for the duration of the run
             for item in tqdm(items, desc=desc, disable=not progress):
                 yield fn(item)
         return
@@ -599,15 +573,15 @@ def _map(state: dict, fn, items: list, n_jobs: int, progress: bool, desc: str):
 
     from threadpoolctl import threadpool_limits
 
-    # fork, not the 3.14 default forkserver: workers inherit the state
-    # without pickling 50 MB per worker, and a calling script needs no
-    # `__main__` guard. Fork is safe here because the parent runs no
-    # threaded numerics of its own: its libraries are pinned to one
-    # thread before the fork, and tqdm's monitor thread is switched off.
+    # fork rather than the Python 3.14 default, forkserver. Workers inherit the
+    # state with no pickling and a calling script needs no __main__ guard.
+    # Safe here because the parent does no threaded numerics of its own. Its
+    # libraries are pinned to one thread before the fork and tqdm's monitor
+    # thread is switched off.
     tqdm.monitor_interval = 0
     threadpool_limits(limits=1)
-    # Python warns that forking a process with threads can deadlock; the
-    # only threads here are idle library pools, pinned to one above.
+    # Python warns that forking a threaded process can deadlock. The only
+    # threads here are idle library pools pinned to one.
     warnings.filterwarnings("ignore", message=".*multi-threaded.*fork.*")
     ctx = mp.get_context("fork")
     chunksize = max(1, len(items) // (n_jobs * 8))
@@ -620,15 +594,13 @@ def _map(state: dict, fn, items: list, n_jobs: int, progress: bool, desc: str):
 
 def provenance(cfg: Config, methods: list[str] | None = None) -> str:
     """
-    A block for the top of a findings file that ties every number in it to
-    the branch, commit, config and cache files that produced it. Anyone can
-    check out the commit, rebuild the config from the line printed here, and
-    either read the same cache file or recompute and compare.
+    A block for the top of a findings file. It ties every number there to the
+    branch, commit, config and cache files that made it, so anyone can check
+    out the commit, rebuild the config and compare.
 
-    Call it in the same checkout and at the same time as the run, or the
-    branch and commit lines describe where the block was written rather
-    than where the predictions were made. Stamping a file later means
-    writing those two lines by hand from the run's history.
+    Call it in the same checkout at the time of the run. Called later, the
+    branch and commit lines describe where the block was written and have to
+    be corrected by hand from the run's history.
     """
     import subprocess
 
@@ -667,9 +639,9 @@ def _ordered(parts: dict[str, pd.DataFrame], methods: list[str]) -> pd.DataFrame
     return pd.concat(frames, ignore_index=True)
 
 
-# Scoring and tables live in src/scoring.py, re-exported here so existing
-# imports keep working. They are a separate module so that editing a table
-# does not change this module's code digest and invalidate the cache.
+# Scoring and tables live in src/scoring.py and are re-exported here so the
+# old imports keep working. They are a separate module on purpose. Editing a
+# table must not change this module's digest and invalidate the cache.
 from src.scoring import (  # noqa: E402
     REFERENCE_BENCHMARK,
     improvement_over,

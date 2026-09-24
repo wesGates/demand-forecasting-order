@@ -1,10 +1,10 @@
 """
 Scoring and tables, from the long predictions table step 5 produces.
 
-Kept apart from the harness on purpose: the predictions cache is keyed on
-the harness module's code, so a change to how results are *summarised*
-must not invalidate hours of fitting. Everything here reads predictions
-and writes tables; nothing here changes a forecast.
+Kept apart from the harness on purpose. The predictions cache is keyed on the
+harness module's code, and a change to how results are summarised must not
+invalidate hours of fitting. Everything here reads predictions and writes
+tables. Nothing here changes a forecast.
 """
 
 from __future__ import annotations
@@ -23,14 +23,13 @@ FOLD_KEYS = ["id", "item_id", "store_id", "fold", "origin", "week_kind", "method
 
 def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
     """
-    One row per series-fold-method: RMSE, MAE, bias, and RMSSE.
+    One row per series-fold-method with RMSE, MAE, bias and RMSSE.
 
-    RMSSE here is `rmse / scale`, where `scale` came with the predictions. All
-    methods in the same series-fold share that scale, which is why RMSSE
-    cannot change who wins a fold - only how folds and stores are compared.
+    RMSSE is rmse / scale, where the scale came with the predictions. Every
+    method in a series-fold shares that scale, which is why RMSSE cannot change
+    who wins a fold, only how folds and stores compare.
 
-    Closure days are dropped before scoring (see the module docstring), so a
-    fold containing one is scored on six days rather than seven.
+    Closure days are dropped first, so a fold with one is scored on six days.
     """
     if "closure" in predictions:
         predictions = predictions[~predictions["closure"].astype(bool)]
@@ -38,10 +37,10 @@ def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
     def one(g: pd.DataFrame) -> pd.Series:
         err = (g["forecast"] - g["actual"]).to_numpy(dtype=float)
         scale = float(g["scale"].iloc[0])
-        # A fold is unscored, not "infinitely bad", when a forecast is missing
-        # or the scale is zero or undefined (a series with no pre-holdout
-        # history, or a constant one). Unscored folds are counted, never
-        # averaged, so a method cannot look good on the folds it skipped.
+        # A fold is unscored when a forecast is missing or the scale is zero or
+        # NaN. It is counted in n_unscored and dropped from averages and pairs.
+        # The old code scored these as infinity, which made the mean RMSSE
+        # infinite for any method with one such fold.
         finite = bool(np.isfinite(err).all())
         scorable = finite and np.isfinite(scale) and scale > 0
         rmse = float(np.sqrt(np.mean(err**2))) if finite else np.nan
@@ -54,7 +53,7 @@ def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
                 "unscored": not scorable,
                 "fallback": bool(g["fallback"].any()) if "fallback" in g else False,
                 "n_days": len(g),
-                # the store's level that week - what "busiest first" orders by
+                # the store's level that week, what "busiest first" sorts on
                 "mean_actual": float(np.mean(g["actual"])),
             }
         )
@@ -79,16 +78,15 @@ def rmsse_by_store(scores: pd.DataFrame, week_kind: str | None = None) -> pd.Dat
     """
     Stores down, methods across, mean RMSSE over folds. The headline table.
 
-    `week_kind` restricts it to "normal" or "holiday" folds; None pools both.
+    `week_kind` restricts it to "normal" or "holiday" folds. None pools both.
     """
     scores = _weeks(scores, week_kind)
     table = scores.pivot_table(
         index="store_id", columns="method", values="rmsse", aggfunc="mean"
     )
-    # Order stores by volume (busiest first) and methods by overall RMSSE.
-    # Volume is the mean actual level; an earlier version sorted by RMSE
-    # ascending, which put the *quietest* store first under a "busiest
-    # first" label.
+    # Stores by volume, busiest first, and methods by overall RMSSE. Volume is
+    # the mean actual level. Known mistake: an earlier version sorted by RMSE
+    # ascending, which put the quietest store first under a busiest-first label.
     store_order = (
         scores.groupby("store_id", observed=True)["mean_actual"]
         .mean()
@@ -104,11 +102,10 @@ def win_rates(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFram
     For every method, the share of series-folds where it beat each benchmark.
 
     Rows are methods, columns are benchmarks, values are fractions. 0.5 means
-    "no better than the benchmark"; the row for a benchmark against itself is
-    left blank. Win rate is a blunt instrument - it says how *often*, not by
-    how *much* - which is why it sits beside RMSSE rather than replacing it.
+    no better than the benchmark. A benchmark against itself is left blank. A
+    win rate says how often and never by how much, so it sits beside RMSSE.
 
-    `week_kind` restricts it to "normal" or "holiday" folds; None pools both.
+    `week_kind` restricts it to "normal" or "holiday" folds. None pools both.
     """
     scores = _weeks(scores, week_kind)
     wide = scores.pivot_table(
@@ -129,10 +126,10 @@ def win_rates(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFram
 
 
 # The benchmark the headline claims are made against. Seasonal naive is what
-# an orderer's default screen shows (this day last week), and it is also the
-# RMSSE denominator, so "improvement over it" and "1 - RMSSE" are the same
-# quantity seen two ways. The 28-day moving average is the harder benchmark
-# and is reported alongside as the stress check.
+# an orderer's default screen shows (this day last week). It is also the RMSSE
+# denominator, which makes "improvement over it" and "1 - RMSSE" the same
+# number seen two ways. The 28-day moving average is the harder benchmark and
+# gets reported beside it as the stress check.
 REFERENCE_BENCHMARK = "seasonal_naive"
 
 
@@ -142,13 +139,12 @@ def improvement_over(
     week_kind: str | None = None,
 ) -> pd.DataFrame:
     """
-    Per method: how often and by how much it beat one benchmark, fold by fold.
+    Per method, how often and by how much it beat one benchmark, fold by fold.
 
     `win_rate` is the share of series-folds with lower RMSSE than the
     benchmark. The improvement columns are the per-fold percentage reduction
-    in RMSSE relative to the benchmark - mean, and the quartiles, because a
-    mean improvement can hide a quarter of folds that got worse. Rows for the
-    benchmark itself are dropped.
+    in RMSSE, as a mean and as quartiles, because a mean can hide a quarter of
+    folds that got worse. The benchmark's own row is dropped.
     """
     scores = _weeks(scores, week_kind)
     wide = scores.pivot_table(
@@ -161,11 +157,11 @@ def improvement_over(
         if m == benchmark:
             continue
         pair = wide[[m, benchmark]].dropna()
-        # A benchmark can score exactly zero on a fold - a week of zero sales
-        # forecast as zero by seasonal naive on an intermittent item - and a
-        # percentage improvement over zero is undefined. Those folds still
-        # count toward the win rate (nothing beats a zero) but not toward the
-        # improvement quartiles, and the column says how many were dropped.
+        # A benchmark can score exactly zero on a fold, a week of zero sales
+        # forecast as zero on an intermittent item. A percentage improvement
+        # over zero is undefined. Those folds still count toward the win rate
+        # (nothing beats a zero) but not toward the quartiles, and n_undefined
+        # says how many were dropped.
         undefined = pair[benchmark] <= 0
         gain = (pair[benchmark] - pair[m])[~undefined] / pair[benchmark][~undefined] * 100
         rows.append(
@@ -189,10 +185,10 @@ def improvement_over(
 
 def summarise(scores: pd.DataFrame) -> pd.DataFrame:
     """
-    One row per method: mean and median RMSSE across all series-folds, mean
-    bias, and the mean RMSSE on normal and on holiday folds separately, with
-    the count of each. Sorted best on all folds first. The single table to
-    quote - and quote both week columns, never just the pooled one.
+    One row per method. Mean and median RMSSE over all series-folds, mean bias,
+    the mean RMSSE on normal and holiday folds with the count of each, and the
+    unscored and fallback counts. Sorted best first. this is the table to
+    quote, and quote both week columns.
     """
     overall = scores.groupby(["method", "kind"], observed=True).agg(
         rmsse_mean=("rmsse", "mean"),

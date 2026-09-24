@@ -1,30 +1,27 @@
 """
-The run registry: every run on record, so a change is measured against
-the last one instead of assumed.
+The run registry. One row per cached run and one row per store-origin score,
+in a SQLite file beside the cache (cache/registry.sqlite). It exists so a
+change gets measured against the last run. The SQL Server store later will use
+the same two tables.
 
-The cache already keeps every forecast, keyed on configuration, method and
-code. What it lacks is a list: which runs exist, when and at what commit
-they were made, and how they scored. The registry is that list, in a
-SQLite file beside the cache (`cache/registry.sqlite`), with the same two
-tables the planned SQL Server results store will have:
-
-  run         one row per cached run (run_id = the cache file's stem):
+  run         one row per cached run (run_id is the cache file's stem):
               method, layout, item, pooling, code digest, git state, time,
               headline scores against the seasonal naive and the 28-day mean
   fold_score  one row per store-origin of that run: RMSSE, bias, MAE, RMSE,
-              the store's level that week, the kind of week
+              the store's level that week, the kind of week, the unscored
+              and fallback flags
 
-Everything in it is derived from the cache and the git history; it is never
-edited by hand. Rebuild it at any time with `backfill()`.
+Everything in it is derived from the cache and the git history. Nothing is
+edited by hand. Rebuild it any time with `backfill()`.
 
-Recording happens through `record()`, which wraps the harness rather than
-living inside it: the harness file is part of every cache key, so a change
-there would invalidate every cached run. Use `python -m src.run` for new
-runs; `python -m src.registry backfill` indexes the runs already on disk.
+Recording goes through `record()`, which wraps the harness. The harness file
+is part of every cache key, and a change there would invalidate every cached
+run. Use `python -m src.run` for new runs and `python -m src.registry
+backfill` to index runs already on disk.
 
-Comparisons are paired: the same store and the same origin under two runs,
-which is the only comparison that means anything when folds differ in
-difficulty by a factor of three.
+Comparisons are paired, the same store and origin under two runs. Folds
+differ in difficulty by a factor of three, and only a paired comparison means
+anything.
 """
 
 from __future__ import annotations
@@ -113,7 +110,7 @@ def connect(cfg: Config | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.executescript(SCHEMA)
-    # columns added after the first release; harmless when already present
+    # columns added after the first release. harmless when already present
     for table, column, kind in (("run", "n_unscored", "INTEGER"), ("run", "n_fallback", "INTEGER"),
                                 ("fold_score", "unscored", "INTEGER"), ("fold_score", "fallback", "INTEGER")):
         try:
@@ -147,9 +144,9 @@ def _benchmark_scores(cfg: Config, panel: pd.DataFrame | None = None) -> pd.Data
     """
     The reference and stress benchmarks scored under this config's layout.
     Benchmarks never pool, so a pooled config takes them from the per-series
-    config with the same layout. Cheap to fit if not cached (seconds), from
-    `panel` when given, else from the loader - but never for a config with
-    no item chosen, which would mean loading the whole dataset.
+    config with the same layout. Cheap to fit if not cached, from `panel` when
+    given, else from the loader. Never for a config with no item chosen, which
+    would load the whole dataset.
     """
     per_series = Config(**{**cfg.__dict__, "pool_by": None})
     frames = []
@@ -201,10 +198,9 @@ def _headline(scores: pd.DataFrame, method: str, bench: pd.DataFrame) -> dict:
 
 def _insert(con: sqlite3.Connection, run_row: dict, scores: pd.DataFrame) -> bool:
     """
-    A run is recorded once. Recording the same run again (same forecasts,
-    same code) keeps the first row - its time and commit describe when the
-    forecasts were made - and only appends the new note. Returns whether a
-    row was written.
+    A run is recorded once. Recording the same run again keeps the first row,
+    whose time and commit say when the forecasts were made, and only appends
+    the new note. Returns whether a row was written.
     """
     existing = con.execute("SELECT note FROM run WHERE run_id = ?", (run_row["run_id"],)).fetchone()
     if existing is not None:
@@ -235,6 +231,7 @@ def _run_row(cfg: Config, method: str, predictions: pd.DataFrame, *, source: str
              recorded_at: str, run_seconds: float | None, note: str | None,
              code_digest: str | None = None, git: dict | None = None,
              panel: pd.DataFrame | None = None) -> tuple[dict, pd.DataFrame]:
+    """Build the run's row and its fold scores. The row id is the cache file's stem when the code is current."""
     path = _method_cache_path(cfg, method)
     digest_now = _method_code(method)
     digest = code_digest or digest_now
@@ -271,7 +268,7 @@ def record(cfg: Config, methods: list[str], note: str | None = None,
     """
     Run the harness for `methods` under `cfg` (cached methods load instantly)
     and register each. Returns the run ids. This is the entry point for new
-    runs; see `python -m src.run`.
+    runs, see `python -m src.run`.
     """
     from src.step2_data import load_panel
 
@@ -300,8 +297,8 @@ def record(cfg: Config, methods: list[str], note: str | None = None,
 
 def _config_from_sidecar(info: dict, base: Config) -> Config:
     """
-    Rebuild a Config from a sidecar's {field: repr(value)}. Missing fields
-    take defaults; the path fields, which sidecars leave out, come from `base`.
+    Rebuild a Config from a sidecar's {field: repr(value)}. Missing fields take
+    defaults. The path fields, which sidecars leave out, come from `base`.
     """
     known = {f.name for f in fields(Config)}
     kwargs = {k: ast.literal_eval(v) for k, v in info["config"].items() if k in known}
@@ -310,9 +307,9 @@ def _config_from_sidecar(info: dict, base: Config) -> Config:
 
 def refresh_code_current(cfg: Config | None = None) -> int:
     """
-    Recompute `code_current` for every row: 1 where the run's code digest is
-    what the code computes now for that method. Called by `backfill`, and
-    worth calling after any code change, since the column is a snapshot.
+    Recompute `code_current` for every row. 1 where the run's digest is what
+    the code computes now for that method. Backfill calls it, and it is worth
+    calling after any code change since the column is a snapshot.
     """
     con = connect(cfg)
     rows = con.execute("SELECT run_id, method, code_digest FROM run").fetchall()
@@ -335,8 +332,8 @@ def refresh_code_current(cfg: Config | None = None) -> int:
 
 def backfill(cfg: Config | None = None, verbose: bool = True) -> int:
     """
-    Index every cached run under cache/predictions. Runs made under older
-    code are kept with code_current = 0. Idempotent: rows are replaced.
+    Index every cached run under cache/predictions. Runs made under older code
+    stay with code_current = 0. Idempotent, known rows are skipped.
     """
     cfg = cfg or Config()
     refresh_code_current(cfg)
@@ -378,6 +375,7 @@ def backfill(cfg: Config | None = None, verbose: bool = True) -> int:
 
 
 def runs(cfg: Config | None = None, where: str = "1=1", params: tuple = ()) -> pd.DataFrame:
+    """The run rows as a DataFrame, filtered by a WHERE clause, oldest first."""
     con = connect(cfg)
     try:
         return pd.read_sql_query(
@@ -388,7 +386,7 @@ def runs(cfg: Config | None = None, where: str = "1=1", params: tuple = ()) -> p
 
 
 def predecessor(run_id: str, cfg: Config | None = None) -> str | None:
-    """The most recent earlier run of the same method on the same suite, item, stores and pooling."""
+    """The most recent earlier run of the same method under the same config."""
     con = connect(cfg)
     try:
         me = con.execute("SELECT * FROM run WHERE run_id = ?", (run_id,)).fetchone()
@@ -409,10 +407,10 @@ def predecessor(run_id: str, cfg: Config | None = None) -> str | None:
 
 def compare(run_a: str, run_b: str, cfg: Config | None = None) -> dict:
     """
-    Paired comparison of run B against run A on the store-origins they share:
-    win rate (B's RMSSE lower), and mean, quartiles and median of the
-    percentage reduction in RMSSE. A difference inside the fold-to-fold noise
-    shows up as a win rate near 0.5 and a median near zero.
+    Paired comparison of run B against run A on the store-origins they share.
+    Win rate (B's RMSSE lower), and the mean, median and quartiles of the
+    percentage reduction in RMSSE. Noise shows as a win rate near 0.5 and a
+    median near zero.
     """
     con = connect(cfg)
     try:
@@ -444,6 +442,7 @@ def compare(run_a: str, run_b: str, cfg: Config | None = None) -> dict:
 
 
 def format_comparison(c: dict) -> str:
+    """One readable block for the terminal."""
     return (
         f"{c['b']}  vs  {c['a']}   ({c['n_paired']} paired store-origins)\n"
         f"  RMSSE  {c['rmsse_a']:.3f} -> {c['rmsse_b']:.3f}     bias  {c['bias_a']:+.2f} -> {c['bias_b']:+.2f}\n"

@@ -4,9 +4,9 @@ Run one or more methods on a benchmark suite and register the result.
     python -m src.run --suite dev --item fast --methods xgboost_rel --note "try X"
     python -m src.run --suite everyday --item slow --pool item_id --methods xgboost_rel
 
-Cached methods load instantly and are still registered, so this is also the
-way to put an existing run on record under a note. After each method the
-run is compared with its predecessor on the same layout, if there is one.
+Cached methods load instantly and still get registered, so this is also how
+an existing run goes on record under a note. After each method the run is
+compared with its predecessor on the same layout, if there is one.
 """
 
 from __future__ import annotations

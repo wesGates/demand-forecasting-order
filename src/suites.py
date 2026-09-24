@@ -1,17 +1,17 @@
 """
-Benchmark suites: the fixed layouts every model change is scored on.
+Benchmark suites, the fixed layouts every model change is scored on.
 
-A change only counts when it is scored on the same items, the same folds
-and the same metrics as the version it replaces. A suite pins the layout;
-the item is chosen separately so the same suite can be run on any item.
+A change only counts when it is scored on the same items, folds and metrics
+as the version it replaces. A suite pins the layout. The item is chosen
+separately, so one suite runs on any item.
 
-  dev       three stores, eight weekly folds - a ~20 s check while iterating
+  dev       three stores, eight weekly folds, a 20 s check while iterating
   weekly    ten stores, 52 weekly folds (the first study's layout)
-  everyday  ten stores, every day an origin for the same year (the reported
+  everyday  ten stores, every day an origin over the same year (the reported
             layout since item 2)
 
-Later suites go here too: a class-stratified item set, a new-items suite.
-Adding a suite is adding a dict entry; nothing else changes.
+Later suites go here as well, a class-stratified item set or a new-items
+suite. Adding one is adding a dict entry.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def suite_config(suite: str, item: str, pool_by: str | None = None, **overrides)
 
 
 def suite_of(cfg: Config) -> str | None:
-    """Which suite a config's layout matches, if any."""
+    """The suite whose layout matches a config, or None."""
     def same(a, b):
         return tuple(sorted(a)) == tuple(sorted(b)) if isinstance(a, tuple) else a == b
 
