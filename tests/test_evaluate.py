@@ -200,7 +200,8 @@ def test_forecasters_see_no_future_sales(panel, cfg, monkeypatch):
         return np.zeros(ctx.horizon)
 
     monkeypatch.setitem(s5.ALL_FORECASTERS, "spy", spy)
-    run_walk_forward(panel, cfg, methods=["spy"], progress=False, use_cache=False)
+    # in-process, so the spy records what the workers would see
+    run_walk_forward(panel, cfg, methods=["spy"], progress=False, use_cache=False, n_jobs=1)
     assert seen
     for ctx in seen:
         assert ctx.history["date"].max() == ctx.origin

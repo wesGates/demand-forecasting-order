@@ -32,12 +32,23 @@ def test_quantile_methods_are_registered_with_their_module():
         assert MODULE_OF[name] is xq
 
 
-def test_one_fit_serves_every_tau_and_reset_forgets_it(tmp_path):
+def test_one_fit_serves_every_tau_and_reset_forgets_it(tmp_path, monkeypatch):
     panel = make_panel(stores={"S1": ("CA", 50.0)})
     cfg = Config(n_folds=3, min_train_days=200, cache_dir=tmp_path)
     names = [xq.method_name(t) for t in xq.TAUS]
-    p = run_walk_forward(panel, cfg, methods=names, progress=False, use_cache=False)
-    assert len(xq._predicted) == 3  # one entry per fold, not one per tau
+    import xgboost
+
+    fits = []
+    real_fit = xgboost.XGBRegressor.fit
+
+    def counting_fit(self, *args, **kwargs):
+        fits.append(1)
+        return real_fit(self, *args, **kwargs)
+
+    monkeypatch.setattr(xgboost.XGBRegressor, "fit", counting_fit)
+    # in-process, so the count is visible here
+    p = run_walk_forward(panel, cfg, methods=names, progress=False, use_cache=False, n_jobs=1)
+    assert len(fits) == 3  # one fit per fold serves all four taus
     assert set(p["method"]) == set(names)
     reset_run_state()
     assert xq._predicted == {}
