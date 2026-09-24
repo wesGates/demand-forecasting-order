@@ -93,7 +93,7 @@ def render_all(cfg: Config | None = None) -> list[str]:
     # 5b. which calendar events move this item - the evidence for MAJOR_EVENTS
     calendar = pd.read_csv(cfg.data_dir / "calendar.csv", parse_dates=["date"])
     fig, ax = plt.subplots(figsize=(7.5, 6.2))
-    plots.plot_event_effects(event_effects(df, calendar), major=MAJOR_EVENTS, ax=ax)
+    plots.plot_event_effects(event_effects(df, calendar, cutoff), major=MAJOR_EVENTS, ax=ax)
     save(fig, "6_event_effects.png")
 
     # 6. SNAP benefit days

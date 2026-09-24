@@ -42,6 +42,8 @@ report.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -692,9 +694,42 @@ def check_quantile_scoring(seed: int = 3) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def check_harness_parity(seed: int = 11) -> dict:
+    """
+    The parallel harness must produce exactly the forecasts the in-process
+    path produces, for per-series and pooled models and for the method whose
+    state is chosen once per series (ARIMA is covered by the tests; here the
+    cheaper ones). Runs the real harness, so a leak or a reordering inside
+    it - not just inside a model - shows as a mismatch.
+    """
+    import tempfile
+
+    from src.step5_evaluate import run_walk_forward
+
+    panel = _synthetic_panel(n_series=3, n_days=320, seed=seed)
+    methods = ["seasonal_naive", "ets", "xgboost", "xgboost_rel"]
+    mismatches = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for pool in (None, "item_id"):
+            cfg = Config(n_folds=4, min_train_days=200, cache_dir=Path(tmp) / "c", data_dir=Path(tmp), pool_by=pool)
+            ms = methods if pool is None else ["xgboost", "xgboost_rel"]
+            a = run_walk_forward(panel, cfg, methods=ms, progress=False, use_cache=False, n_jobs=1)
+            b = run_walk_forward(panel, cfg, methods=ms, progress=False, use_cache=False, n_jobs=3)
+            same = len(a) == len(b) and np.array_equal(a["forecast"].to_numpy(), b["forecast"].to_numpy())
+            if not same:
+                mismatches.append(f"pool={pool}")
+    return {
+        "check": "harness parity",
+        "tested": "in-process against 3 workers, per-series and pooled, synthetic panel",
+        "methods": methods,
+        "verdict": "ok" if not mismatches else f"MISMATCH {mismatches}",
+    }
+
+
 def run_all() -> bool:
     """Run every check. Returns True only if all pass."""
     checks = [
+        check_harness_parity,
         check_benchmarks_closed_form,
         check_features_hand_computed,
         check_snap_flags,

@@ -36,15 +36,23 @@ def score_folds(predictions: pd.DataFrame) -> pd.DataFrame:
         predictions = predictions[~predictions["closure"].astype(bool)]
 
     def one(g: pd.DataFrame) -> pd.Series:
-        err = g["forecast"] - g["actual"]
-        rmse = float(np.sqrt(np.mean(err**2)))
+        err = (g["forecast"] - g["actual"]).to_numpy(dtype=float)
         scale = float(g["scale"].iloc[0])
+        # A fold is unscored, not "infinitely bad", when a forecast is missing
+        # or the scale is zero or undefined (a series with no pre-holdout
+        # history, or a constant one). Unscored folds are counted, never
+        # averaged, so a method cannot look good on the folds it skipped.
+        finite = bool(np.isfinite(err).all())
+        scorable = finite and np.isfinite(scale) and scale > 0
+        rmse = float(np.sqrt(np.mean(err**2))) if finite else np.nan
         return pd.Series(
             {
                 "rmse": rmse,
-                "mae": float(np.mean(np.abs(err))),
-                "bias": float(np.mean(err)),
-                "rmsse": rmse / scale if scale > 0 else np.inf,
+                "mae": float(np.mean(np.abs(err))) if finite else np.nan,
+                "bias": float(np.mean(err)) if finite else np.nan,
+                "rmsse": rmse / scale if scorable else np.nan,
+                "unscored": not scorable,
+                "fallback": bool(g["fallback"].any()) if "fallback" in g else False,
                 "n_days": len(g),
                 # the store's level that week - what "busiest first" orders by
                 "mean_actual": float(np.mean(g["actual"])),
@@ -110,10 +118,13 @@ def win_rates(scores: pd.DataFrame, week_kind: str | None = None) -> pd.DataFram
     for bench in BENCHMARKS:
         if bench not in wide:
             continue
-        out[bench] = {
-            m: float((wide[m] < wide[bench]).mean()) if m != bench else np.nan
-            for m in wide.columns
-        }
+        out[bench] = {}
+        for m in wide.columns:
+            if m == bench:
+                out[bench][m] = np.nan
+                continue
+            pair = wide[[m, bench]].dropna()  # the same pairs improvement_over uses
+            out[bench][m] = float((pair[m] < pair[bench]).mean()) if len(pair) else np.nan
     return pd.DataFrame(out).sort_index()
 
 
@@ -188,6 +199,8 @@ def summarise(scores: pd.DataFrame) -> pd.DataFrame:
         rmsse_median=("rmsse", "median"),
         bias_mean=("bias", "mean"),
         n_folds=("rmsse", "size"),
+        n_unscored=("unscored", "sum"),
+        n_fallback=("fallback", "sum"),
     )
     by_kind = scores.pivot_table(
         index=["method", "kind"],

@@ -298,6 +298,17 @@ def build_supervised(
         feats["target"] = targets["sales"].to_numpy(dtype=float)
         frames.append(feats)
 
+    if not frames:
+        # Too short to hold even one origin. FPP §13.6: there is no magic
+        # minimum, but a model needs more rows than parameters, and a series
+        # this short gets none. An empty matrix with the right columns lets
+        # the harness skip the series instead of aborting the whole run.
+        frames.append(
+            build_fold_features(
+                series, series.iloc[0:0], series["date"].iloc[-1],
+                use_price=use_price, mask_holidays=mask_holidays,
+            ).assign(origin_date=pd.NaT, target_date=pd.NaT, target=np.nan)
+        )
     out = pd.concat(frames, ignore_index=True)
     out["id"] = series["id"].iloc[0]
     for col in POOL_ID_COLS:

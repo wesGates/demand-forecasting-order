@@ -174,7 +174,9 @@ def series_stats(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return out.sort_values(["item_id", "mean_sales"], ascending=[True, False])
 
 
-def event_effects(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
+def event_effects(
+    df: pd.DataFrame, calendar: pd.DataFrame, cutoff: pd.Timestamp | None = None
+) -> pd.DataFrame:
     """
     How much each calendar event moves sales, relative to a same-weekday
     baseline - the evidence behind `step2_data.MAJOR_EVENTS`.
@@ -204,6 +206,11 @@ def event_effects(df: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
         ]
     ).sort_values("date")
     event_days = set(events["date"])
+    # `cutoff`: the first scored day. Which events become features is a
+    # modelling choice, and a choice made on the test period would be
+    # selection on the test set (FPP §5.8). Pass `classification_cutoff`.
+    if cutoff is not None:
+        df = df[df["date"] < cutoff]
     wide = df.pivot(index="date", columns="id", values="sales")
     # A closure day's sales were imputed by the loader (see step 2). It has no
     # demand to measure, so it must not appear as "ratio 1.0" here.

@@ -38,7 +38,7 @@ STUDY_ITEMS = ("FOODS_3_586",)
 # two. The ranking on these three tracks the ranking on all ten; a change
 # that survives here gets one full run, and the full run is what is
 # reported. Use as `Config(**DEV)` or `Config(**DEV, fold_step=1)`.
-DEV = dict(item_ids=STUDY_ITEMS, store_ids=("TX_2", "CA_4", "WI_2"), n_folds=8)
+DEV = dict(item_ids=STUDY_ITEMS, store_ids=("CA_4", "TX_2", "WI_2"), n_folds=8)  # sorted, as Config keeps them
 
 # Columns a model is allowed to pool over. Anything else is a typo.
 POOL_SCOPES = (None, "item_id", "dept_id", "cat_id", "store_id", "state_id")
@@ -196,6 +196,10 @@ class Config:
     cache_dir: Path = Path("cache")
 
     def __post_init__(self) -> None:
+        # Canonical order, so ("A", "B") and ("B", "A") are one configuration
+        # and one cache key.
+        object.__setattr__(self, "item_ids", tuple(sorted(self.item_ids)))
+        object.__setattr__(self, "store_ids", tuple(sorted(self.store_ids)))
         if self.test_window is None:
             object.__setattr__(self, "test_window", self.horizon)
         if self.rmsse_scale_lag is None:

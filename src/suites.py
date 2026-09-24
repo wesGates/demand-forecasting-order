@@ -42,8 +42,11 @@ def suite_config(suite: str, item: str, pool_by: str | None = None, **overrides)
 
 def suite_of(cfg: Config) -> str | None:
     """Which suite a config's layout matches, if any."""
+    def same(a, b):
+        return tuple(sorted(a)) == tuple(sorted(b)) if isinstance(a, tuple) else a == b
+
     for name, fields in SUITES.items():
-        if all(getattr(cfg, k) == v for k, v in fields.items()) and (
+        if all(same(getattr(cfg, k), v) for k, v in fields.items()) and (
             name == "dev" or not cfg.store_ids
         ):
             return name

@@ -269,9 +269,10 @@ def test_score_folds_drops_closure_days():
     assert s["rmse"] == pytest.approx(2.0)
 
 
-def test_zero_scale_gives_infinite_rmsse_rather_than_a_silent_number():
+def test_zero_scale_gives_an_unscored_fold_rather_than_a_silent_number():
     p = _predictions_frame([{"actual": 10.0, "forecast": 11.0, "scale": 0.0}])
-    assert np.isinf(score_folds(p).iloc[0]["rmsse"])
+    row = score_folds(p).iloc[0]
+    assert np.isnan(row["rmsse"]) and bool(row["unscored"])
 
 
 def test_rmsse_never_changes_who_wins_a_fold(predictions):
@@ -349,7 +350,7 @@ def test_rmsse_by_store_values_and_method_order(predictions):
 
 def test_rmsse_by_store_lists_the_busiest_store_first(tmp_path):
     """
-    BUG: the docstring, the `__main__` printout and the notebook all say
+    Regression test for a fixed defect: the docstring, the `__main__` printout and the notebook all say
     "stores down, busiest first". The implementation sorts stores by their
     mean RMSE *ascending*, which puts the quietest store first - the exact
     reverse of the volume gradient the notebook asks the reader to read down.

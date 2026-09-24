@@ -1,7 +1,7 @@
 """
 The validator - the checks that need no M5 data.
 
-README: `python -m src.validate` runs nine checks and the project refuses to
+README: `python -m src.validate` runs ten checks and the project refuses to
 report a number until it passes. Checks 2, 4, 5 and 6 read the raw files,
 which are not in the repository; they are not exercised here.
 """
@@ -15,12 +15,12 @@ from src import validate
 from src.step1_problem import Config
 
 
-def test_run_all_lists_nine_checks():
+def test_run_all_lists_ten_checks():
     import inspect
 
     src = inspect.getsource(validate.run_all)
     names = [n for n in dir(validate) if n.startswith("check_")]
-    assert len(names) == 9
+    assert len(names) == 10
     for name in names:
         assert name in src
 
