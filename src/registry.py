@@ -282,15 +282,41 @@ def _config_from_sidecar(info: dict, base: Config) -> Config:
     return Config(**kwargs, data_dir=base.data_dir, cache_dir=base.cache_dir)
 
 
+def refresh_code_current(cfg: Config | None = None) -> int:
+    """
+    Recompute `code_current` for every row: 1 where the run's code digest is
+    what the code computes now for that method. Called by `backfill`, and
+    worth calling after any code change, since the column is a snapshot.
+    """
+    con = connect(cfg)
+    rows = con.execute("SELECT run_id, method, code_digest FROM run").fetchall()
+    now = {}
+    changed = 0
+    for run_id, method, digest in rows:
+        if method not in now:
+            try:
+                now[method] = _method_code(method)
+            except KeyError:
+                now[method] = None
+        current = int(digest == now[method])
+        cur = con.execute("UPDATE run SET code_current = ? WHERE run_id = ? AND code_current != ?",
+                          (current, run_id, current))
+        changed += cur.rowcount
+    con.commit()
+    con.close()
+    return changed
+
+
 def backfill(cfg: Config | None = None, verbose: bool = True) -> int:
     """
     Index every cached run under cache/predictions. Runs made under older
     code are kept with code_current = 0. Idempotent: rows are replaced.
     """
     cfg = cfg or Config()
+    refresh_code_current(cfg)
     folder = cfg.cache_dir / "predictions"
     con = connect(cfg)
-    have = {r[0] for r in con.execute("SELECT run_id FROM run WHERE source = 'backfill'")}
+    have = {r[0] for r in con.execute("SELECT run_id FROM run")}
     n = 0
     for meta in sorted(folder.glob("*.json")):
         info = json.loads(meta.read_text())
@@ -407,6 +433,7 @@ def format_comparison(c: dict) -> str:
 _USAGE = """usage: python -m src.registry <command> [args]
 
   backfill                 index every cached run on disk (idempotent)
+  refresh                  recompute code_current after a code change
   list [suite]             runs on record, newest last (optionally one suite)
   show <run_id>            one run's row
   compare <run_a> <run_b>  paired comparison of B against A
@@ -423,6 +450,8 @@ def main(argv: list[str]) -> int:
     if cmd == "backfill":
         n = backfill()
         print(f"indexed {n} new runs")
+    elif cmd == "refresh":
+        print(f"code_current changed on {refresh_code_current()} rows")
     elif cmd == "list":
         where, params = ("suite = ?", (args[0],)) if args else ("1=1", ())
         cols = ["run_id", "suite", "item_ids", "pool_by", "code_current", "git_commit",

@@ -69,13 +69,13 @@ about 4% at the busiest store. Full write-up: the parent's `report/`.
 | 4. intermittent item | `item4-intermittent` | learned models lose at every store; cause is level drift trees cannot extrapolate |
 | 5. level-relative target | `item5-level-relative-target` | confirmed on the every-day layout: pooled 0.612 on the fast mover, best of any method (plain pooled 0.621, ARIMA 0.647); 0.500 on the declining item, level with ETS and the 28-day mean (0.497), from 0.570 |
 | 6. run registry | `item6-run-registry` | SQLite `run` + `fold_score` tables beside the cache, suites, `src.run`; 204 runs back-filled; first paired comparison shows item 5's fast-mover gain is marginal (54% wins, median +1.2%) |
+| 7. parallel harness | `item7-parallel-harness` | tasks per fold in worker processes, one thread per fit; every method identical to the old cache; every-day all-methods run 15 min (was ~2 h) |
 
-Next, in order (revised 2026-09-23 after item 6): (a) the parallel
-harness, so every later change is measured quickly against its
-predecessor (the registry is done); (b) the pooled, level-relative model's own
-residuals and calibrated quantiles; (c) intermittent demand properly and
-pooling wider than the item; (d) new items; (e) the SQL Server results
-store and per-forecast explanations; (f) the Fourier/STL item. All are
+Next, in order (revised 2026-09-23 after item 7; the registry and the
+parallel harness are done): (a) the pooled, level-relative model's own
+residuals and calibrated quantiles; (b) intermittent demand properly and
+pooling wider than the item; (c) new items; (d) the SQL Server results
+store and per-forecast explanations; (e) the Fourier/STL item. All are
 described under "Later, not yet scheduled".
 
 ## Later, not yet scheduled
@@ -90,10 +90,7 @@ described under "Later, not yet scheduled".
 - **Run registry: done as item 6.** Remaining: a `rekey` event type
   (with item 7), and suites for a class-stratified item set and for new
   items.
-- **Faster iteration.** A parallel harness over stores and origins
-  (processes, one XGBoost thread each; one writer per cache file; pooled
-  fits memoised per origin; ARIMA orders chosen once and shared). Every
-  full run from hours to minutes on this machine.
+- **Faster iteration: done as item 7.**
 - **Intermittent demand, properly.** A class-stratified item sample,
   Croston and TSB as registered methods, results by class, and the deep
   learning models FPP covers, compared on the same folds.
@@ -139,14 +136,15 @@ it, once. Adding a config field at its default adopts old runs. Paths are
 not in the key, so the cache is portable; this folder's `cache/` was copied
 from the parent and holds the step-7 runs (52 and 104 folds).
 
-| layout | all methods | XGBoost only | quantile XGBoost only |
+| layout | all point methods | XGBoost only | ARIMA only |
 |---|---|---|---|
-| `Config(**DEV)`: 3 stores, 8 folds, step 7 | ~3 min | ~15 s | ~1 min |
-| step 7, 10 stores, 52 folds | ~20 min | ~4 min | ~25 min |
-| step 1, 10 stores, 358 folds | ~1 h 45 min | ~30 min | ~2.5 h |
+| `dev`: 3 stores, 8 folds, weekly | ~45 s | ~2 s | ~33 s |
+| `weekly`: 10 stores, 52 folds | ~3 min | ~20 s | ~2 min |
+| `everyday`: 10 stores, 358 origins | ~15 min | ~2 min | ~10 min |
 
-Idle-machine figures. Two heavy jobs at once roughly quadruple them, so
-run one at a time. Develop on `DEV`; run the full layout once per change
+Measured 2026-09-23 under the parallel harness (item 7), every core, one
+thread per fit. The quantile model has not been re-timed. Two heavy jobs
+at once still contend; run one at a time. Develop on `DEV`; run the full layout once per change
 that survives it; report from the step-1 layout. Edits to the harness
 (`step5_evaluate.py`) or the shared base invalidate every method's cache,
 so batch them.
