@@ -15,4 +15,8 @@ them changes a forecast except `refit_all.py`, which makes new ones.
 | `registry_figures.py` | Exports the registry (runs, current runs with shorthand, fold scores) and draws the per-run RMSSE chart, the stage-by-stage progression and the old-vs-new speed chart. Writes to `figures/registry/`. | after a refit, for a look at everything on record |
 | `bench_threads.py` | Times XGBoost and ARIMA fits three ways (all cores per fit, one thread per fit, twenty single-thread fits at once) on real folds from the study. | when in doubt about the parallel harness on a new machine |
 
+`report/` holds the report and brief builders (see `tools/report/README.md`).
+`sqlserver/` loads the run registry into SQL Server and queries it (see
+`tools/sqlserver/README.md`).
+
 `figures/` is gitignored, like every rendered figure in the project.

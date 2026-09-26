@@ -45,15 +45,20 @@ and is where the quantile work continues.
 4. New items. The harness needs a year of history per series, so new items
    need their own evaluation: items launched inside the test year, against
    simple fallbacks and pretrained models that need no history.
-5. The SQL Server results store and per-forecast explanations (designed,
-   below).
+5. The SQL Server results store, beyond the first version (the two
+   registry tables loaded and queried in SQL Server 2022 on Docker,
+   `tools/sqlserver/`, findings `2026-09-26-sql-server-registry.md`): a
+   query-only login, runs written from `src.run`, the forecast rows, and
+   per-forecast explanations (designed, below).
 6. Fourier terms or an STL decomposition for the annual cycle in the
    classical models (FPP §13.1).
 
 ## Designed, not built
 
-**SQL Server as the results store.** SQL Server in a Docker container as
-source and sink, in new files only so no cached run is invalidated:
+**SQL Server as the results store.** Built in its simplest form on
+2026-09-26 (registry tables only, loaded from SQLite). The full design,
+SQL Server in a Docker container as source and sink, in new files only so
+no cached run is invalidated:
 
 1. sales, calendar, store and item tables loaded from the M5 files, with a
    test that the panel read back equals `load_panel`;

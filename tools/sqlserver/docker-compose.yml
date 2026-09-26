@@ -1,0 +1,17 @@
+# SQL Server 2022 for the run registry. Start with:
+#   MSSQL_PASSWORD='<a strong password>' docker compose -f tools/sqlserver/docker-compose.yml up -d
+# The data lives in a named volume and survives restarts.
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: forecasting-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_PASSWORD}
+      MSSQL_PID: Developer
+    ports:
+      - "127.0.0.1:1433:1433"  # localhost only; nothing else on the network can reach it
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+volumes:
+  sqlserver-data:

@@ -20,3 +20,6 @@ pytest==9.1.1
 reportlab==5.0.1
 odfpy==1.4.1
 pypdf==6.19.0
+
+# SQL Server load of the registry (tools/sqlserver).
+pymssql==2.4.1
