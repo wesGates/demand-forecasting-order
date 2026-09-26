@@ -46,10 +46,13 @@ from __future__ import annotations
 
 from src.models import (
     arima_model,
+    arma_model,
     benchmarks,
     ets_model,
     xgboost_model,
     xgboost_quantile,
+    xgboost_poisson,
+    xgboost_rel_recent,
     xgboost_relative,
 )
 from src.models.arima_model import (
@@ -68,6 +71,10 @@ MODELS: dict[str, Forecaster] = {
     "ets": fit_predict_ets,
     "arima": fit_predict_arima,
     "xgboost_rel": xgboost_relative.fit_predict_xgboost_relative,
+    "xgboost_poisson": xgboost_poisson.fit_predict_xgboost_poisson,
+    "xgboost_rel_recent": xgboost_rel_recent.fit_predict_xgboost_rel_recent,
+    "arima_plain": arma_model.fit_predict_arima_plain,
+    "arma": arma_model.fit_predict_arma,
     **xgboost_quantile.QUANTILE_MODELS,
 }
 
@@ -83,6 +90,10 @@ MODULE_OF = {
     "ets": ets_model,
     "arima": arima_model,
     "xgboost_rel": xgboost_relative,
+    "xgboost_poisson": xgboost_poisson,
+    "xgboost_rel_recent": xgboost_rel_recent,
+    "arima_plain": arma_model,
+    "arma": arma_model,
     **{name: xgboost_quantile for name in xgboost_quantile.QUANTILE_MODELS},
 }
 
@@ -97,6 +108,8 @@ def reset_run_state() -> None:
     xgboost_quantile.reset()
     xgboost_model.reset()
     xgboost_relative.reset()
+    xgboost_rel_recent.reset()
+    arma_model.reset()
 
 
 __all__ = [
