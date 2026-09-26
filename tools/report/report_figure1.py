@@ -1,5 +1,5 @@
 """Figure 1 of the follow-on report: the first study's error by store, with
-plain labels. Run from the FIRST-STUDY repo root with its .venv (the cached
+plain labels. Run from the first-study checkout (../demand-forecasting-first-study) with its .venv (the cached
 predictions are there). Writes into the follow-on repo's report/figures/."""
 from pathlib import Path
 import matplotlib.pyplot as plt
