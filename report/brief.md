@@ -51,7 +51,7 @@ average is the best forecast and the final XGBoost model ties it, so
 items are routed by demand class before anything is fitted, the machine
 learning model for steady daily movers and the simple average for the
 rest. The machine learning model still beats last week's number in 82%
-of store-weeks on this item and ARIMA at all ten stores.
+of store-weeks on this item and is ahead of ARIMA at nine of ten stores.
 
 *Table 2. The slow mover, the same methods scored against last week's
 number. The full ladder is in the main report.*

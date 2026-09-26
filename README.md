@@ -1,70 +1,98 @@
 # Demand forecasting on M5
 
-The first study, tag `first-study` in this repository, compared XGBoost,
-ETS and seasonal ARIMA against six benchmarks on one fast-moving grocery
-item at ten stores, on 52 weekly folds. Everything after it takes the same
-pipeline further, one numbered item at a time, each on its own branch
-with its own findings file. The report is `report/report.md` and the
-two-page summary `report/brief.md`. (An archived copy of the first study
-as its own repository is `demand-forecasting-first-study`.)
+A daily, store-level demand forecast, tested on a full year at ten stores
+against the forecasts a planner would use without it. Public data: the M5
+dataset of Walmart daily sales, with a calendar of holidays and SNAP
+benefit days.
+
+**84% of store-weeks** better than ordering from last week's number, by a
+median of 28%, on a fast, regular mover.
+
+**10 of 10 stores** better than ARIMA, the strongest statistical model,
+over the full year.
+
+**23% less weekly order error** than last week's number, 36 units a week
+per store down to 27.6.
+
+Five years of daily history, ten stores, 358 forecast origins per store,
+3,580 scored store-weeks per method, ten methods (two benchmarks, four
+statistical models and four machine learning variants), every model refit
+at every origin.
+
+![What each modelling step gained](report/figures/1_ladder.png)
+
+Each rung is one modelling step up from the one before, and the label on
+each bar is the median gain over the previous step. The final model is
+gradient-boosted trees (XGBoost) trained across all ten stores on a
+level-relative target, and its gain is over a strong statistical model.
+
+| rung | RMSSE | weekly error, units | vs previous rung, weeks won | vs previous rung, median gain | vs seasonal naive, weeks won | vs seasonal naive, median gain |
+|---|---|---|---|---|---|---|
+| This day last week (seasonal naive) | 0.86 | 36.0 | | | | |
+| ARMA, no seasonality, no inputs | 0.70 | 33.5 | 77% | 19% | 77% | 19% |
+| ARIMA, no holiday or SNAP inputs | 0.66 | 32.7 | 65% | 5% | 82% | 24% |
+| ARIMA | 0.65 | 31.5 | 58% | 1% | 83% | 25% |
+| **XGBoost, pooled, level-relative (final)** | 0.61 | 27.6 | 58% | 3% | 84% | 28% |
+
+RMSSE is the scaled error the M5 competition used, with 1.0 the error of
+last week's number on the training history. Weekly error is the average
+miss on a week's total order, in units, about 9% of a typical week's sales
+for the final model and 11% for last week's number.
+
+On a slow mover in decline (0.6 to 7 units a day) a 28-day moving average
+is the best forecast and the final model ties it (0.50 each), so items are
+routed by demand class before anything is fitted, the machine learning
+model for steady daily movers and the simple average for the rest.
+
+The full story, with the tables for both items and every method against
+every baseline, is [`report/report.md`](report/report.md). The two-page
+summary is [`report/brief.md`](report/brief.md). Both build to PDF and
+.odt with [`tools/report/`](tools/report/).
+
+## What the system does
+
+- Forecasts a seven-day order window from every day of the year,
+  refitting at each origin, the way an ordering system might use them.
+- Holiday and SNAP effects measured from the data. Seven of thirty
+  calendar events move this item's sales, and the model sees the days
+  until and since each.
+- Bias reported beside error throughout. A forecast that runs
+  systematically high is shrink every week and one that runs low is a
+  stockout.
+- Every number reproducible to the byte. Each change to a model is scored
+  against the previous version on the same 3,580 store-weeks, so noise
+  shows up as a coin-flip win rate.
+- A full-year evaluation of all methods on one item in about fifteen
+  minutes, and a validator that has to pass before any number is quoted.
+
+The model's inputs are recent sales (the last three days and the same
+weekday over the last four weeks), the weekly pattern, the level and its
+spread over the last week to two months, the calendar and how many days
+ahead the forecast is, the days until and since the seven holidays that
+matter, SNAP benefit days, and, in the pooled model, the store.
+
+## How it was built
+
+The first study, tag `first-study`, compared XGBoost, ETS and seasonal
+ARIMA against six benchmarks on one fast mover, on 52 weekly folds.
+Everything after it took the same pipeline further one numbered item at a
+time, each on its own branch with a dated findings file in
+[`findings/`](findings/).
 
 | item | question | answer |
 |---|---|---|
-| 1 | Does XGBoost trained on the quantile objective beat calibrated error quantiles? | No. Same pinball loss within 0.002, at 26× the fit cost. |
-| 2 | Does making every day an origin change the results? | Tables move by less than 0.005. Two benchmarks lose a Sunday artefact. Adopted as the reported layout. |
+| 1 | Does XGBoost trained on the quantile objective beat calibrated error quantiles? | No. Same score within 0.002, at 26× the fit cost. |
+| 2 | Does making every day an origin change the results? | Tables move by less than 0.01. Two benchmarks lose a Sunday artefact. Adopted as the reported layout. |
 | 3 | One model pooled across the ten stores? | Best method on the fast mover. Helps the quiet stores most and cuts bias by two thirds. |
-| 4 | An intermittent, declining item? | The learned models lose at every store. The cause is level drift, which trees cannot extrapolate. |
+| 4 | A slow, declining item? | The machine learning models lose at every store. The cause is level drift, which trees cannot extrapolate. |
 | 5 | Trees on a level-relative target? | Closes the gap on the declining item, small gain on the fast mover. |
 | 6 | A run registry | Every run on record with its config, code version, commit and scores, and paired comparisons between runs. |
 | 7 | A parallel harness | Every-day runs in 15 min per item, down from about 2 h. Forecasts identical. |
 | 8 | A code review | One leak fixed (the closure imputation looked forward), fallbacks and unscored folds counted, the cache checked against the data. |
+| 9 | Both items in one pool? | Ties on the fast mover, loses on the slow one in holiday weeks. A shared pool needs the target on a common scale. |
 
-Findings files are in `findings/`, dated, one per item. `PLAN.md` has the
-status, what comes next and the rules. `GLOSSARY.md` defines the terms.
-
-## Results
-
-Every-day layout, 358 origins, ten stores, the year 25 May 2015 to 22 May
-2016. RMSSE is the error scaled by the seasonal naïve on training data, so
-1.0 means no better than "this day last week". Bias is forecast minus
-actual in units a day.
-
-| method | fast mover (FOODS_3_586) | bias | slow, declining item (FOODS_1_021) | bias |
-|---|---|---|---|---|
-| XGBoost, pooled, level-relative target | **0.611** | +0.21 | 0.501 | +0.18 |
-| XGBoost, pooled | 0.622 | +0.26 | 0.570 | +0.57 |
-| ARIMA, seasonal, holiday regressors | 0.648 | +0.00 | 0.519 | +0.33 |
-| XGBoost, one model per store | 0.665 | +0.76 | 0.610 | +0.95 |
-| ETS, Holt-Winters | 0.670 | −0.06 | 0.500 | +0.14 |
-| 28-day moving average | 0.795 | −0.03 | **0.497** | +0.08 |
-| seasonal naïve, this day last week | 0.864 | −0.04 | 0.687 | +0.03 |
-
-On the fast mover the pooled level-relative XGBoost beats the seasonal
-naïve in 84% of seven-day forecasts, by a median of 28%, and is the best
-method at seven stores; the plain pooled model takes the other three. On
-the slow item the simple methods lead and the same model ties them. The
-per-store trees that started the study were 60% high on it.
-
-## How the pipeline works
-
-- `src/step2_data.py` loads M5, reshapes it to one row per store, item and
-  day, joins the calendar, SNAP and price data, and fills the Christmas
-  closure from the four preceding weeks (FPP §13.7 for the closure as a
-  missing day, §5.10 for why only the past is used).
-- `src/step3_explore.py` screens each series for stock-out gaps and
-  classifies demand by ADI and CV² on training data only.
-- `src/features.py` builds lags, rolling summaries, same-weekday means and
-  holiday proximity from data at or before the origin, with an assertion
-  on every fold.
-- `src/models/` holds one module per forecaster. `src/step4_models.py`
-  registers them.
-- `src/step5_evaluate.py` runs the walk-forward in parallel and caches each
-  method's forecasts under a key made of the config and the code the
-  method depends on. `src/scoring.py` turns forecasts into tables.
-- `src/registry.py` records every run. `src/suites.py` names the layouts.
-  `src/run.py` runs, registers and compares.
-- `src/validate.py` is the gate: ten checks, including negative controls
-  on synthetic data.
+[`PLAN.md`](PLAN.md) has the status, what comes next and the rules.
+[`GLOSSARY.md`](GLOSSARY.md) defines the terms.
 
 ## Running it
 
@@ -88,21 +116,33 @@ python -m src.registry last <run_id>       # a run against its predecessor
 Suites fix the layout a change is scored on. `dev` is three stores and
 eight weekly folds (under a minute), `weekly` is 52 folds (about 3 min for
 every method), `everyday` is 358 origins (about 15 min). Develop on `dev`
-and confirm on `everyday`.
+and confirm on `everyday`. [`tools/`](tools/) has the refit, gate,
+comparison and figure scripts.
 
-`tools/` has the refit, gate, comparison and figure scripts, each described
-in `tools/README.md`.
+## How the pipeline works
 
-## The cache and the registry
+- `src/step2_data.py` loads M5, reshapes it to one row per store, item and
+  day, joins the calendar, SNAP and price data, and fills the Christmas
+  closure from the four preceding weeks.
+- `src/step3_explore.py` screens each series for stock-out gaps and
+  classifies demand by ADI and CV² on training data only.
+- `src/features.py` builds lags, rolling summaries, same-weekday means and
+  holiday proximity from data at or before the origin, with an assertion
+  on every fold.
+- `src/models/` holds one module per forecaster. `src/step4_models.py`
+  registers them.
+- `src/step5_evaluate.py` runs the walk-forward in parallel and caches each
+  method's forecasts under a key made of the config and the code the
+  method depends on. `src/scoring.py` turns forecasts into tables.
+- `src/registry.py` records every run. `src/suites.py` names the layouts.
+  `src/run.py` runs, registers and compares.
+- `src/validate.py` is the gate, ten checks including negative controls on
+  synthetic data.
 
-Each method's forecasts are cached under `cache/predictions/` with a key
-made of the config (paths excluded) and a digest of the code the method
-depends on. Editing one model refits that model only. A cached run is
-checked against the data on disk every time it is read. The registry
-(`cache/registry.sqlite`) lists every run with its config, code digest,
-commit, time and scores, plus one row per store-origin, and can be rebuilt
-from the cache with `python -m src.registry backfill`. Both live under
-`cache/`, which is gitignored.
+Each method's forecasts are cached under `cache/predictions/`. Editing one
+model refits that model only, and a cached run is checked against the
+data on disk every time it is read. The registry (`cache/registry.sqlite`)
+can be rebuilt from the cache with `python -m src.registry backfill`.
 
 ## Layout
 
@@ -123,17 +163,16 @@ src/
   plots.py            every figure, one palette
   render_figures.py   figures for the notebooks
   validate.py         the gate
-tools/                refit, gate, comparison and figure scripts
+tools/                refit, gate, comparison, figure and report scripts
 tests/                pytest suite
 notebooks/            01_explore, 02_evaluate, 03_order (percent-format scripts)
 findings/             one dated file per item, with provenance
-report/               the write-up and its figures
+report/               the report, the brief and their figures
 ```
 
-## What is not claimed
+## Limits
 
-Public data only. M5 has no inventory, receipts or stock-outs, so a
-business-outcome backtest is not possible and no store-level result is
-implied. Two items and ten stores. New items with no history are not
-addressed. Deep learning, cloud and SQL are not used; the plan lists what
-comes next.
+Public data only. M5 has no inventory, deliveries or stockouts, so an
+order can only be simulated and a zero on the shelf cannot be told from a
+zero in demand. Two items at ten stores is a small study. New items with
+no history are not addressed. The plan lists what comes next.

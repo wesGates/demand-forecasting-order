@@ -12,6 +12,20 @@ in one public repository, listed under References.
 
 ## Results
 
+**84% of store-weeks** better than ordering from last week's number, by a
+median of 28%, on a fast, regular mover.
+
+**10 of 10 stores** better than ARIMA, the strongest statistical model,
+over the full year.
+
+**23% less weekly order error** than last week's number, 36 units a week
+per store down to 27.6.
+
+Five years of daily history, ten stores, 358 forecast origins per store,
+3,580 scored store-weeks per method, ten methods (two benchmarks, four
+statistical models and four machine learning variants), every model refit
+at every origin.
+
 Every error in this report is on one scale, the root mean squared scaled
 error (RMSSE). It is the recommended measure for comparing accuracy across
 series of different sizes (Hyndman et al., 2026, §5.8) and the measure the
@@ -30,9 +44,9 @@ In the test year that benchmark scored 0.86 on the fast mover and 0.69 on
 the slow one, and the models are read against those.
 
 On a fast, regular mover (14 to 103 units a day depending on the store)
-the final model scores 0.61. It is a gradient-boosted tree model (XGBoost;
-Chen and Guestrin, 2016) trained across all ten stores on a level-relative
-target, both explained below. It beats last week's number in 84% of
+the final model scores 0.61. It is a machine learning model, gradient-boosted
+trees (XGBoost; Chen and Guestrin, 2016) trained across all ten stores on a
+level-relative target, both explained below. It beats last week's number in 84% of
 store-weeks, by a median of 28%, and is the best method at seven of the
 ten stores. Against ARIMA, the strongest statistical model here, it is ahead at
 all ten stores over the year (median store gain 6% on daily error, 13% on
@@ -66,11 +80,13 @@ as the share of store-weeks it won, the median gain in those weeks, and
 the number of stores where it came out ahead over the year. The
 right-hand columns score every step against the first rung. Weekly error
 is the average size of the miss on a week's total, in units, which is the
-number an orderer feels. Read down the table for what each step bought. A
-fitted model of the recent level is worth the most over last week's
-number, the weekly pattern comes next, the holiday and SNAP inputs add a
-little, and the learned model is a modest step on top of a strong
-statistical model, ahead at nine or ten stores on every rung. Appendix
+number an orderer feels, about 9% of a typical week's sales for the final
+model and 11% for last week's number. Read down the table for what each
+step gained. A fitted model of the recent level is worth the most over
+last week's number, the weekly pattern comes next, the holiday and SNAP
+inputs add a little, and the machine learning model is a modest step on
+top of a strong statistical model, ahead at nine or ten stores on every
+rung. Appendix
 Table A1 has every method against every baseline.
 
 *Table 2. The fast mover, from the simplest forecast to the final model.
@@ -86,16 +102,19 @@ Each rung is scored against the previous rung and against the first.*
 
 ![Figure 1](figures/1_ladder.png)
 
-*Figure 1. The same ladder drawn. Bars are the scaled error of each rung.
-The label is the median gain over the previous rung.*
+*Figure 1. The same ladder drawn, from the simplest forecast (top) to the
+final model (bottom, gold). Bars are the scaled error of each rung and the
+label is the median gain over the previous rung.*
 
 On a slow mover in decline (0.6 to 7 units a day) two simple methods
 lead, a 28-day moving average and exponential smoothing at 0.50 each (the
-shaded rows of Table 3). The final model ties them at 0.50, and the
-starting model scored 0.61. The pipeline built here therefore assigns each store-item a method by its
-demand class before anything is fitted. Items with steady daily movement
-get the learned model. Items that do not sell every day get the simple
-average. Truly intermittent items, with more zero days than sales days,
+shaded rows of Table 3). The final XGBoost model ties them at 0.50, and
+the starting model scored 0.61. The pipeline built here therefore assigns
+each store-item a method by its demand class before anything is fitted.
+Items with steady daily movement get the machine learning model. Items
+that do not sell every day get the simple average. The machine learning
+model still beats last week's number in 82% of store-weeks on this item
+and is ahead of ARIMA at nine of ten stores. Truly intermittent items, with more zero days than sales days,
 would get Croston's method (Croston, 1972; Hyndman et al., 2026, §13.2),
 which forecasts the size of a sale and the gap between sales as two
 separate series.
@@ -140,8 +159,8 @@ In short, this is a first version of a store forecasting system.
 - Daily store-level forecasts, tested against last week's number on a
   full year and reported as the share of weeks won and the size of the
   win.
-- A data-driven rule for which items get a learned model and which get a
-  simple one.
+- A data-driven rule for which items get a machine learning model and
+  which get a simple one.
 - Bias reported beside error, because a forecast that runs systematically
   high is shrink every week and one that runs low is a stockout.
 - A pipeline where every number is reproducible, every change is measured
@@ -161,9 +180,8 @@ Each method stands on an origin day, is fitted on the history up to that
 day, and forecasts the next seven. The origin then moves forward one day.
 This runs for every day from 25 May 2015 to 22 May 2016, 358 origins at
 each of ten stores, 3,580 store-weeks per method (Hyndman et al., 2026,
-§5.10). Adjacent weeks share six
-of their seven days, so the 3,580 carry less evidence than their count
-suggests. The first study, described below, used Sundays only.
+§5.10). Adjacent weeks share six of their seven days, so the 3,580 carry
+less evidence than their count suggests. The first study, described below, used Sundays only.
 
 Errors are squared, averaged over the seven days and the stores, and
 scaled by the error "this day last week" made on the series' own history
@@ -171,9 +189,9 @@ before the test year. That is the RMSSE of the Results section.
 
 A week is a holiday week when it touches the window around one of the
 seven calendar events that move this item's sales, about one week in
-five. The accuracy tables are split into normal and holiday weeks. A single average
-can hide a bad month, and it can also hide which kind of week a win came
-from.
+five. The accuracy tables are split into normal and holiday weeks. A
+single average can hide a bad month, and it can also hide which kind of
+week a win came from.
 
 The win rate is the share of store-weeks in which a method's error was
 below the benchmark's, paired week by week. The median gain is the middle
@@ -186,8 +204,7 @@ Each store's series is classified before any model is fitted, on the
 history before the test year, by how often it sells (the average days
 between sales) and how variable the sale sizes are (the squared
 coefficient of variation), with the cut-offs of 1.32 and 0.49 from
-Syntetos and Boylan (2005).
-Smooth series sell most days at steady quantities. Erratic ones sell most
+Syntetos and Boylan (2005). Smooth series sell most days at steady quantities. Erratic ones sell most
 days at varying quantities. Intermittent ones have many zero days. Lumpy
 ones have both.
 
@@ -246,7 +263,7 @@ The model's inputs are all known on the forecast day.
 - **The calendar.** Weekday, weekend, day of month, month, day of year, and
   how many days ahead the forecast is.
 - **Holidays.** Whether the day is near one of the seven events above, and
-  the days until and since the nearest one. The run-up and the hangover
+  the days until and since the nearest one. The run-up and the days after
   get their own signal that way.
 - **SNAP benefit days**, which fall on different dates in each state.
 
@@ -312,8 +329,9 @@ a comparator.
 **Every day as a starting point.** Forecasting from every day of the year
 (358 origins, up from 52) moved the all-weeks numbers by less than 0.01
 and the holiday-week numbers by about 0.02, and corrected two readings.
-The "yesterday" benchmarks' nine-unit over-forecast had been an artefact of Sunday origins, which repeat the busiest day for the whole
-week, and it vanished. Error by weekday of the origin is flat (ARIMA
+The "yesterday" benchmarks' nine-unit over-forecast had been an artefact
+of Sunday origins, which repeat the busiest day for the whole week, and it
+vanished. Error by weekday of the origin is flat (ARIMA
 0.69–0.70 on every weekday), so a Tuesday order gets the same answer as a
 Sunday one. Error grows with the horizon for the statistical models (ARIMA
 0.66 one day ahead to 0.71 seven days ahead) and barely for XGBoost (0.70
@@ -390,8 +408,7 @@ scale, which is left for future work.
 ![Figure 4](figures/4_progression.png)
 
 *Figure 4. The machine learning model at each stage on both items. Left,
-error.
-Middle, the share of weeks it beats "this day last week". Right, bias.
+error. Middle, the share of weeks it beats "this day last week". Right, bias.
 The horizontal lines are ARIMA, ARMA and the 28-day average for each
 item.*
 
@@ -431,10 +448,13 @@ across operating systems is not claimed.
 - Turn the forecast into an order quantity at a chosen service level,
   which sets the trade-off between shrink and stockouts once, and score
   the orders on how often they would have run short.
-- Extend the routing rule to intermittent items with Croston's method, and
-  try count-aware objectives (Poisson, Tweedie) for the tree model on
-  low-volume series.
-- Handle new items with no sales history.
+- Extend the routing rule to intermittent items with Croston's method and
+  its TSB variant, and try count-aware objectives (Poisson, Tweedie) for
+  the tree model on low-volume series.
+- Handle new items with no sales history (zero-shot).
+- Add the yearly pattern with Fourier terms or an STL decomposition, the
+  approach recommended for daily data with a yearly cycle (Hyndman et
+  al., 2026, §13.1).
 - Weight recent training rows more than old ones, which the year-to-year
   drift in level suggests, and a proportional target (sales divided by the
   recent level) so one model can serve items of different volume.
