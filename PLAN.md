@@ -9,7 +9,7 @@ has the numbers.
 The parent repository established that XGBoost, ETS and seasonal ARIMA
 beat six benchmarks on one fast-moving item at ten stores (52 weekly
 folds), and that a point forecast is not an order. This repository took
-that pipeline through eight items:
+that pipeline through nine items:
 
 | item | branch | outcome |
 |---|---|---|
@@ -21,6 +21,13 @@ that pipeline through eight items:
 | 6. run registry | `item6-run-registry` | `run` and `fold_score` tables beside the cache, suites, `src.run`, paired comparisons |
 | 7. parallel harness | `item7-parallel-harness` | one thread per fit, tasks in worker processes; forecasts identical; every-day runs 15 min per item |
 | 8. review fixes | `item8-review-fixes` | closure imputation backward-only; events chosen before the cutoff; fallbacks and unscored folds counted; cache checked against the data; `step1` in the key; atomic writes; registry guards |
+| 9. both items in one pool | `exp-xgb-quick-wins` | ties on the fast mover, loses on the slow one in holiday weeks; the additive target carries holiday lifts across items, so a shared pool needs a proportional target |
+
+The same branch added two weaker relatives of ARIMA as baselines
+(`arima_plain`, no regressors; `arma`, no seasonality, no regressors) and
+two dev-suite experiments (`xgboost_poisson`, `xgboost_rel_recent`) that
+went no further. The report (`report/report.md`) and the two-page brief
+(`report/brief.md`) are built from `tools/report/`.
 
 The numbers to quote are in `findings/2026-09-23-item8-review-fixes.md`.
 The ordering prototype (`src/order.py`, notebook 03) is from before item 1
@@ -33,7 +40,8 @@ and is where the quantile work continues.
 2. Intermittent demand properly: a sample of items chosen by demand class,
    Croston and TSB as registered methods (FPP §13.2), results by class, a
    service-level score beside RMSSE, and a per-method minimum history.
-3. Pooling wider than one item.
+3. Pooling wider than one item, on a proportional target (item 9 showed
+   the additive target cannot share holiday effects across volumes).
 4. New items. The harness needs a year of history per series, so new items
    need their own evaluation: items launched inside the test year, against
    simple fallbacks and pretrained models that need no history.

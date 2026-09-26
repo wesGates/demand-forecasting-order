@@ -17,6 +17,7 @@ compare.
 | `2026-09-23-item6-run-registry.md` | the run registry |
 | `2026-09-23-item7-parallel-harness.md` | the parallel harness |
 | `2026-09-23-item8-review-fixes.md` | the review fixes and the refit under them |
+| `2026-09-25-item9-cross-item-pool.md` | both items in one pool, and why it lost on the slow mover |
 
 Each file stays as written at its stage. Later items do not rewrite
 earlier ones; when a number is superseded, the later file says so and gives
