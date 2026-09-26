@@ -15,3 +15,8 @@ mplcursors==0.7.1     # hover tooltips in pop-out figure windows; optional
 # development only - formatting and linting
 ruff==0.16.7
 pytest==9.1.1
+
+# Report tooling (tools/report): PDF and .odt builders.
+reportlab==5.0.1
+odfpy==1.4.1
+pypdf==6.19.0
