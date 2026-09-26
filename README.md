@@ -1,11 +1,12 @@
-# Demand forecasting on M5, the follow-on study
+# Demand forecasting on M5
 
-This repository continues
-[demand-forecasting](https://github.com/wesGates/demand-forecasting). That
-study compared XGBoost, ETS and seasonal ARIMA against six benchmarks on
-one fast-moving grocery item at ten stores, on 52 weekly folds. This one
-takes the same pipeline further, one numbered item at a time, each on its
-own branch with its own findings file.
+The first study, tag `first-study` in this repository, compared XGBoost,
+ETS and seasonal ARIMA against six benchmarks on one fast-moving grocery
+item at ten stores, on 52 weekly folds. Everything after it takes the same
+pipeline further, one numbered item at a time, each on its own branch
+with its own findings file. The report is `report/report.md` and the
+two-page summary `report/brief.md`. (An archived copy of the first study
+as its own repository is `demand-forecasting-first-study`.)
 
 | item | question | answer |
 |---|---|---|

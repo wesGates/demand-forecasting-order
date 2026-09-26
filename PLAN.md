@@ -120,8 +120,7 @@ remakes every reported run in about 45 min.
 
 ## Local setup
 
-`~/Documents/projects/demand-forecasting-order`, its own `.venv` (Python
-3.14, `requirements.txt`). `data` is a symlink to the parent repository's
-data folder. `cache/` holds the runs and the registry and is gitignored.
+The checkout has its own `.venv` (Python 3.14, `requirements.txt`).
+`data` holds the three M5 files (or a symlink to them). `cache/` holds the runs and the registry and is gitignored.
 Figures render to `figures/`, also gitignored; the report keeps its own
 copies.

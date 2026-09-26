@@ -8,7 +8,7 @@ standing on each day of one year, forecasting the next seven, and checking
 what sold, at ten stores. The data is public (the M5 dataset of Walmart
 daily sales for 2011–2016, with a calendar of holidays and SNAP benefit
 days; Makridakis et al., 2022). The code behind every figure and table is
-in two public repositories, listed under References.
+in one public repository, listed under References.
 
 ## Results
 
@@ -503,6 +503,5 @@ Syntetos, A. A., Boylan, J. E., and Croston, J. D. (2005). On the
 categorization of demand patterns. *Journal of the Operational Research
 Society*, 56(5), 495–503.
 
-Code: the first study and the follow-on work are two repositories on the
-author's GitHub account (wesGates), demand-forecasting and
-demand-forecasting-order.
+Code: github.com/wesGates/demand-forecasting. The first study as reported
+is tag `first-study` in the same repository.

@@ -105,8 +105,8 @@ the tenth. The busiest store benefits the most, 17 fewer units a week.*
 - Scale from two items and ten stores to a department of 800 items, with
   the run records in a shared SQL database.
 
-Full report and code: two public repositories on my GitHub account
-(wesGates), demand-forecasting and demand-forecasting-order.
+Full report and code: github.com/wesGates/demand-forecasting (the first
+study as reported is tag first-study there).
 
 Hyndman, R. J., Athanasopoulos, G., Garza, A., Challu, C., Mergenthaler,
 M., and Olivares, K. G. (2026). *Forecasting: Principles and Practice, the
